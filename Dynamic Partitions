@@ -1,0 +1,66 @@
+create or replace procedure A_BLD_PRTN is
+  cursor cur_find_partn is
+    select partvalue, 'SRC_' || partvalue PARTNAME
+      from (select to_char(add_months(SYSDATE, -LEVEL), 'YYYYMM') partvalue
+              from dual
+            connect by level <=12);
+
+  type TYP_TBL_LIST is VARRAY(25) of varchar2(50);
+  v_tbl_list typ_tbl_list := TYP_TBL_LIST('TB_CM_CDM_AFFIL_HIST',
+'TB_CM_CDM_AFFIL_REJ_HIST',
+'TB_CM_CDM_PROFS_HIST',
+'TB_CM_CDM_PROFS_REJ_HIST',
+'TB_CM_IMS1B_HIST',
+'TB_CM_IMS1B_REJ_HIST',
+'TB_CM_SPKR_BRND_HIST',
+'TB_CM_SPKR_BRND_REJ_HIST',
+'TB_CM_SPKR_DEGREE_HIST',
+'TB_CM_SPKR_DEGREE_REJ_HIST',
+'TB_CM_SPKR_EMAIL_HIST',
+'TB_CM_SPKR_EMAIL_REJ_HIST',
+'TB_CM_SPKR_PHONE_HIST',
+'TB_CM_SPKR_PHONE_REJ_HIST',
+'TB_CM_SPKR_PRFL_HIST',
+'TB_CM_SPKR_PRFL_REJ_HIST',
+'TB_CM_SPKR_SPEC_HIST',
+'TB_CM_SPKR_SPEC_REJ_HIST');
+  -- v_EXISTS VARCHAR2(1) := 'N';
+  V_COUNT   NUMBER := 0;
+  V_SQL_STR VARCHAR2(300) := '';
+  V_CURR    VARCHAR2(50) := 0;
+  v_main VARCHAR2(2000);
+begin
+
+  FOR V_CUR_REF IN CUR_FIND_PARTN LOOP
+    FOR I IN 1 .. 18 LOOP
+
+      V_COUNT   := 0;
+      V_CURR    := V_TBL_LIST(I);
+      V_SQL_STR := 'SELECT COUNT(1)
+            FROM ALL_TAB_PARTITIONS
+     WHERE TABLE_NAME = ''' || V_TBL_LIST(I) || '''
+       AND PARTITION_NAME = ''' || V_CUR_REF.PARTNAME || '''';
+        --DBMS_OUTPUT.PUT_LINE(V_SQL_STR);
+      EXECUTE IMMEDIATE V_SQL_STR
+        INTO V_COUNT;
+      IF V_COUNT = 0 THEN
+                v_main:= 'ALTER TABLE ' || V_TBL_LIST(I) ||
+                          ' ADD PARTITION ' || V_CUR_REF.PARTNAME ||
+                          ' VALUES (''' || V_CUR_REF.PARTVALUE || ''')';
+                          --DBMS_OUTPUT.PUT_LINE(v_main);
+     EXECUTE IMMEDIATE v_main;                                                    
+      END IF;
+    END LOOP;
+    DBMS_OUTPUT.PUT_LINE(v_main);
+    DBMS_OUTPUT.PUT_LINE('DONE FOR' || V_CUR_REF.PARTVALUE);
+  END LOOP;
+  
+  FOR I IN 1..18  LOOP
+   EXECUTE IMMEDIATE 'ALTER TABLE ' || V_TBL_LIST(I) ||
+                          ' DROP  PARTITION P1';
+                          DBMS_OUTPUT.PUT_LINE('Dropped');
+          END LOOP;
+EXCEPTION
+  WHEN OTHERS THEN
+    DBMS_OUTPUT.PUT_LINE(V_CURR || SQLERRM);
+END;
