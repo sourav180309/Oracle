@@ -1,0 +1,2381 @@
+-- Create table
+create table TB_CDW_ERR
+(
+  ERR_SKEY    INTEGER not null,
+  LOAD_MONTH  VARCHAR2(10) not null,
+  SRCE_SYS_ID VARCHAR2(20) not null,
+  FILE_NAME   VARCHAR2(50),
+  TAB_NAME    VARCHAR2(50),
+  ERR_DESC    VARCHAR2(1000) not null,
+  ERR_REC     VARCHAR2(4000) not null,
+  ERR_TS      DATE default sysdate,
+  ROW_ID      ROWID
+);
+-- Create table
+create table TB_CDW_STORE_INDX
+(
+  INDEX_NAME      VARCHAR2(32) not null,
+  INDEX_TYPE      VARCHAR2(30),
+  TABLE_NAME      VARCHAR2(30) not null,
+  TABLESPACE_NAME VARCHAR2(30),
+  COLUMN_NAME     VARCHAR2(4000),
+  PARTITIONED     VARCHAR2(3),
+  COLUMN_POSITION NUMBER not null
+);
+
+create or replace package PKG_CDW_COMMON_UTIL AUTHID CURRENT_USER is
+
+  -- Author  : BAKHAAS1
+  -- Created : 8/12/2008 8:58:03 AM
+  -- Purpose : This Package contains common Procedures.
+
+  PROCEDURE SP_ENABLE_TABLE_CONSTRAINTS(tablename  varchar,
+                                        tablespace varchar);
+  PROCEDURE SP_DISABLE_TABLE_CONSTRAINTS(TABLENAME VARCHAR);
+  PROCEDURE SP_DROP_TABLE_INDEXES(V_TABLENAME VARCHAR2);
+  PROCEDURE SP_EXCPTN_HANDLING(P_TABLE    VARCHAR2,
+                               P_FILENAME IN VARCHAR2 DEFAULT NULL,
+                               P_SRC_ID   IN VARCHAR2,
+                               P_OUTPUT   IN VARCHAR2 DEFAULT 'N');
+  PROCEDURE SP_REJ_EXCPTN_HANDLING(P_TABLE       VARCHAR2,
+                                   P_REJ_TABLE   IN VARCHAR2,
+                                   P_SUBSYS_NAME IN VARCHAR2);
+  PROCEDURE SP_REJ_EXCPTN_HANDLING(P_TABLE       VARCHAR2,
+                                   P_REJ_TABLE   IN VARCHAR2,
+                                   P_SUBSYS_NAME IN VARCHAR2,
+                                   P_ROWID_ACT IN VARCHAR2);
+  PROCEDURE SP_BUILD_CONTROL_FILE(P_DIR_NAME      VARCHAR2,
+                                  P_TBL_NAME      VARCHAR2,
+                                  P_CTL_FILE_NAME VARCHAR2,
+                                  P_DELIM         VARCHAR2,
+                                  P_LOAD_MODE     VARCHAR2,
+                                  P_PARTN         VARCHAR2,
+                                  P_DATE_FMT      VARCHAR2);
+  PROCEDURE SP_WRITE_DATA(P_TABLE     IN VARCHAR2, -- Table name
+                          P_COLUMN    IN VARCHAR2 DEFAULT NULL,
+                          P_FILE      IN VARCHAR2, -- Output file name
+                          P_DIRECTORY IN VARCHAR2, -- Output Directory name
+                          P_DELIMITER IN VARCHAR2 DEFAULT ',', -- delimiter character
+                          P_DATEFMT   IN VARCHAR2 DEFAULT 'DD/MM/YYYY', -- Date format
+                          P_WHERE     IN VARCHAR2 DEFAULT NULL, -- Where clause
+                          P_ORDER     IN VARCHAR2 DEFAULT NULL -- Order by
+                          );
+  PROCEDURE SP_DISABLE_TABLE_INDX(P_TABLE_NAME VARCHAR2);
+  PROCEDURE SP_ENABLE_TABLE_INDX(P_TABLE_NAME VARCHAR2);
+  PROCEDURE SP_DROP_TABLE_INDX_STORE(P_TABLE IN VARCHAR2);
+  PROCEDURE SP_CREATE_TABLE_INDX(P_TABLE IN VARCHAR2);
+
+end PKG_CDW_COMMON_UTIL;
+/
+
+create or replace package body PKG_CDW_COMMON_UTIL is
+
+  ---------------------------------SP_ENABLE_TABLE_CONSTRAINTS-------------------------------------------------
+  PROCEDURE SP_ENABLE_TABLE_CONSTRAINTS(tablename  varchar,
+                                        tablespace varchar) AS
+    /*
+    -------------------------------------------------------------------------------------------
+    CREATED BY -LOGESH
+    CREATED ON -Apr-28-2008
+    Description -This procedure enables all constraints on a table and dependent on that table
+    -------------------------------------------------------------------------------------------
+    */
+    /* CURSOR c_dep IS
+    SELECT 'ALTER TABLE ' || table_name || '  ENABLE CONSTRAINT ' ||
+           constraint_name
+      from user_constraints
+     where r_constraint_name in
+           (select constraint_name
+              from user_constraints
+             where table_name = tablename);*/
+    V_FK_EXC EXCEPTION;
+    V_PK_EXC EXCEPTION;
+    V_NULL_EXC EXCEPTION;
+    PRAGMA EXCEPTION_INIT(V_PK_EXC, -02437);
+    PRAGMA EXCEPTION_INIT(V_FK_EXC, -02298);
+    PRAGMA EXCEPTION_INIT(V_NULL_EXC, -02293);
+    CURSOR c_ind_pk IS
+      SELECT 'ALTER TABLE ' || table_name || '  ENABLE CONSTRAINT ' ||
+             constraint_name || ' USING INDEX TABLESPACE '
+        FROM user_constraints
+       where table_name = tablename
+         and constraint_type = 'P';
+    CURSOR c_ind_fk IS
+      SELECT 'ALTER TABLE ' || table_name || '  ENABLE CONSTRAINT ' ||
+             constraint_name
+        FROM user_constraints
+       where table_name = tablename
+         and constraint_type <> 'P';
+    --  v_dep_sql         VARCHAR2(2000);
+    v_ind_pk_sql VARCHAR2(2000);
+    v_ind_fk_sql VARCHAR2(2000);
+    --  v_constraint_cnt  NUMBER;
+    v_table_name      VARCHAR2(50);
+    v_tablespace_name VARCHAR2(50);
+    V_CURR_STEP       VARCHAR2(5000) := '';
+  BEGIN
+    V_CURR_STEP := 'SELECT table_name
+    into v_table_name
+    from user_tables
+   where table_name = ''' || tablename || '''';
+    SELECT table_name
+      into v_table_name
+      from user_tables
+     where table_name = tablename;
+    V_CURR_STEP := 'SELECT tablespace_name
+    into v_tablespace_name
+    from user_tablespaces
+   where tablespace_name = ''' || tablespace || '''';
+    SELECT tablespace_name
+      into v_tablespace_name
+      from user_tablespaces
+     where tablespace_name = tablespace;
+    /*SELECT count(constraint_name)
+     into v_constraint_cnt
+     from user_constraints
+    where r_constraint_name in
+          (select constraint_name
+             from user_constraints
+            where table_name = tablename);*/
+  
+    /*IF v_constraint_cnt > 0 THEN
+    
+      OPEN c_ind_pk;
+      LOOP
+        FETCH c_ind_pk
+          INTO v_ind_pk_sql;
+        v_ind_pk_sql := v_ind_pk_sql || tablespace;
+        EXIT WHEN c_ind_pk%NOTFOUND;
+        EXECUTE IMMEDIATE v_ind_pk_sql;
+      END LOOP;
+      CLOSE c_ind_pk;
+    
+      OPEN c_ind_fk;
+      LOOP
+        FETCH c_ind_fk
+          INTO v_ind_fk_sql;
+        EXIT WHEN c_ind_fk%NOTFOUND;
+        EXECUTE IMMEDIATE v_ind_fk_sql;
+      END LOOP;
+      CLOSE c_ind_fk;
+    
+      OPEN c_dep;
+      LOOP
+        FETCH c_dep
+          INTO v_dep_sql;
+        EXIT WHEN c_dep%NOTFOUND;
+        EXECUTE IMMEDIATE v_dep_sql;
+      END LOOP;
+      CLOSE c_dep;
+    
+    ELSIF */
+  
+    /* If v_constraint_cnt = 0 THEN*/
+    V_CURR_STEP := 'OPENING CURSOR:
+SELECT ''ALTER TABLE '' || table_name || ''  ENABLE CONSTRAINT '' ||
+            || constraint_name || '' USING INDEX TABLESPACE ''
+      FROM user_constraints
+     where table_name = ''' || tablename || '''
+       and constraint_type = ''P''';
+  
+    OPEN c_ind_pk;
+    LOOP
+      V_CURR_STEP := 'FETCH c_ind_pk
+      INTO v_ind_pk_sql';
+      FETCH c_ind_pk
+        INTO v_ind_pk_sql;
+      V_CURR_STEP  := '';
+      v_ind_pk_sql := v_ind_pk_sql || tablespace;
+      EXIT WHEN c_ind_pk%NOTFOUND;
+      V_CURR_STEP := 'EXECUTE IMMEDIATE ''' || v_ind_pk_sql || '''';
+      EXECUTE IMMEDIATE v_ind_pk_sql;
+    END LOOP;
+    CLOSE c_ind_pk;
+  
+    V_CURR_STEP := 'OPENING CURSOR:
+SELECT ''ALTER TABLE '' || table_name || ''  ENABLE CONSTRAINT '' ||
+           constraint_name
+      FROM user_constraints
+     where table_name = ''' || tablename || '''
+       and constraint_type <> ''P''';
+  
+    OPEN c_ind_fk;
+    LOOP
+      V_CURR_STEP := 'FETCH c_ind_fk
+      INTO v_ind_fk_sql';
+      FETCH c_ind_fk
+        INTO v_ind_fk_sql;
+      EXIT WHEN c_ind_fk%NOTFOUND;
+      V_CURR_STEP := 'EXECUTE IMMEDIATE ''' || v_ind_fk_sql || '''';
+      EXECUTE IMMEDIATE v_ind_fk_sql;
+    END LOOP;
+    V_CURR_STEP := '';
+    CLOSE c_ind_fk;
+  
+    /*  END IF;*/
+  
+  EXCEPTION
+    WHEN V_PK_EXC OR V_FK_EXC OR V_NULL_EXC THEN
+      RAISE;
+    when others then
+      IF V_CURR_STEP IS NOT NULL THEN
+        dbms_output.put_line('PKG_CDW_COMMON_UTIL.SP_ENABLE_TABLE_CONSTRAINTS: Error while executing command:');
+        dbms_output.put_line(V_CURR_STEP);
+      END IF;
+      raise;
+  END SP_ENABLE_TABLE_CONSTRAINTS;
+  -------------------------------------SP_DISABLE_TABLE_CONSTRAINTS------------------------------------------------
+  PROCEDURE SP_DISABLE_TABLE_CONSTRAINTS(TABLENAME VARCHAR) AS
+    PRAGMA AUTONOMOUS_TRANSACTION;
+    /*
+    -------------------------------------------------------------------------------------------
+    CREATED BY -LOGESH
+    CREATED ON -Apr-28-2008
+    Description -This procedure disables all constraints on a table and dependent on that table
+    -------------------------------------------------------------------------------------------
+    */
+    CURSOR C_DEP IS
+      SELECT 'ALTER TABLE ' || TABLE_NAME || '  DISABLE CONSTRAINT ' ||
+             CONSTRAINT_NAME
+        FROM USER_CONSTRAINTS
+       WHERE R_CONSTRAINT_NAME IN
+             (SELECT CONSTRAINT_NAME
+                FROM USER_CONSTRAINTS
+               WHERE TABLE_NAME = TABLENAME);
+  
+    CURSOR C_IND IS
+      SELECT 'ALTER TABLE ' || TABLE_NAME || '  DISABLE CONSTRAINT ' ||
+             CONSTRAINT_NAME
+        FROM USER_CONSTRAINTS
+       WHERE TABLE_NAME = TABLENAME;
+  
+    V_DEP_SQL        VARCHAR2(2000);
+    V_IND_SQL        VARCHAR2(2000);
+    V_CONSTRAINT_CNT NUMBER;
+    V_TABLE_NAME     VARCHAR2(50);
+    V_CURR_STEP      VARCHAR2(2000) := '';
+  
+  BEGIN
+  
+    V_CURR_STEP := 'SELECT TABLE_NAME
+    INTO ''' || V_TABLE_NAME || '''
+    FROM USER_TABLES
+   WHERE TABLE_NAME = ''' || TABLENAME || '''';
+    SELECT TABLE_NAME
+      INTO V_TABLE_NAME
+      FROM USER_TABLES
+     WHERE TABLE_NAME = TABLENAME;
+  
+    V_CURR_STEP := 'SELECT COUNT(CONSTRAINT_NAME)
+    INTO ''' || V_CONSTRAINT_CNT || '''
+    FROM USER_CONSTRAINTS
+   WHERE R_CONSTRAINT_NAME IN
+         (SELECT CONSTRAINT_NAME
+            FROM USER_CONSTRAINTS
+           WHERE TABLE_NAME = ''' || TABLENAME || ''' )';
+    SELECT COUNT(CONSTRAINT_NAME)
+      INTO V_CONSTRAINT_CNT
+      FROM USER_CONSTRAINTS
+     WHERE R_CONSTRAINT_NAME IN
+           (SELECT CONSTRAINT_NAME
+              FROM USER_CONSTRAINTS
+             WHERE TABLE_NAME = TABLENAME);
+  
+    V_CURR_STEP := '';
+    IF V_CONSTRAINT_CNT > 0 THEN
+    
+      V_CURR_STEP := 'SELECT ''ALTER TABLE ''|| TABLE_NAME || ''  DISABLE CONSTRAINT '' ||
+           CONSTRAINT_NAME
+      FROM USER_CONSTRAINTS
+     WHERE R_CONSTRAINT_NAME IN
+           (SELECT CONSTRAINT_NAME
+              FROM USER_CONSTRAINTS
+             WHERE TABLE_NAME = ''' || TABLENAME ||
+                     ''' )';
+      OPEN C_DEP;
+      LOOP
+        V_CURR_STEP := 'FETCH C_DEP
+        INTO V_DEP_SQL';
+        FETCH C_DEP
+          INTO V_DEP_SQL;
+        EXIT WHEN C_DEP%NOTFOUND;
+        EXECUTE IMMEDIATE V_DEP_SQL;
+      END LOOP;
+      CLOSE C_DEP;
+    
+      V_CURR_STEP := 'SELECT ''ALTER TABLE '' || TABLE_NAME || ''  DISABLE CONSTRAINT '' ||
+           CONSTRAINT_NAME
+      FROM USER_CONSTRAINTS
+     WHERE TABLE_NAME = ''' || TABLENAME || '''';
+      OPEN C_IND;
+      LOOP
+        FETCH C_IND
+          INTO V_IND_SQL;
+        EXIT WHEN C_IND%NOTFOUND;
+        V_CURR_STEP := 'EXECUTE IMMEDIATE 
+                            ' || V_IND_SQL || '';
+        EXECUTE IMMEDIATE V_IND_SQL;
+      END LOOP;
+      CLOSE C_IND;
+    
+      V_CURR_STEP := '';
+    ELSIF V_CONSTRAINT_CNT = 0 THEN
+    
+      V_CURR_STEP := 'SELECT ''ALTER TABLE '' || TABLE_NAME || ''  DISABLE CONSTRAINT '' ||
+           CONSTRAINT_NAME
+      FROM USER_CONSTRAINTS
+     WHERE TABLE_NAME = ''' || TABLENAME || '''';
+      OPEN C_IND;
+      LOOP
+        V_CURR_STEP := 'FETCH C_IND
+        INTO V_IND_SQL';
+        FETCH C_IND
+          INTO V_IND_SQL;
+        EXIT WHEN C_IND%NOTFOUND;
+        V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_IND_SQL || '';
+        EXECUTE IMMEDIATE V_IND_SQL;
+      END LOOP;
+      CLOSE C_IND;
+    
+    END IF;
+  
+  EXCEPTION
+    WHEN OTHERS THEN
+    
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_DISABLE_TBL_CONSTRAINTS : ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR(-20001, SQLERRM);
+  END;
+
+  ---------------------------------------SP_DROP_TABLE_CONSTRAINTS------------------------------------------------
+  PROCEDURE SP_DROP_TABLE_INDEXES(V_TABLENAME VARCHAR2) IS
+    ---------------------------------------------------------------------------------
+    --PROJECT:           CDW FACTORY FB
+    --AUTHOR:            COGNIZANT (BAKUL T)
+    --DATE:              13-JUN-2008               
+    --DESCRIPTION:       THIS PROCEDURE WILL DELETE ALL THE INDEXES FOR A TABLE.
+    ---------------------------------------------------------------------------------
+    --REVISION HISTORY
+    ---------------------------------------------------------------------------------
+    --VERSION NO         DATE                AUTHOR       DESCRIPTION
+    --0.1                13-JUN-2008         COGNIZANT    INITIAL VERSION
+    ---------------------------------------------------------------------------------
+  
+    CURSOR GET_INDEX IS
+      SELECT INDEX_NAME FROM ALL_INDEXES WHERE TABLE_NAME = V_TABLENAME;
+    V_SQL_STR   VARCHAR2(50);
+    V_CURR_STEP VARCHAR2(2000) := '';
+  
+  BEGIN
+    V_CURR_STEP := 'SELECT INDEX_NAME FROM ALL_INDEXES WHERE TABLE_NAME = ''' ||
+                   V_TABLENAME || '''';
+    --LOOP THROUGH ALL THE INDEXES FOR A TABLE AND DROP EACH ONE
+    FOR REC_INDEX IN GET_INDEX LOOP
+      V_CURR_STEP := 'DROP INDEX ' || REC_INDEX.INDEX_NAME || '';
+      V_SQL_STR   := 'DROP INDEX ' || REC_INDEX.INDEX_NAME;
+      V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_SQL_STR || '';
+      EXECUTE IMMEDIATE V_SQL_STR;
+    END LOOP;
+  
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_DROP_TABLE_INDEXES : ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR(-20001, SQLERRM);
+  END SP_DROP_TABLE_INDEXES;
+
+  PROCEDURE SP_EXCPTN_HANDLING(P_TABLE    VARCHAR2,
+                               P_FILENAME IN VARCHAR2 DEFAULT NULL,
+                               P_SRC_ID   IN VARCHAR2,
+                               P_OUTPUT   IN VARCHAR2 DEFAULT 'N') AS
+  
+    /**********************************************************************************************************
+    Created on :11July 2008
+    Created by : Sourav Chandra
+    Purpose: Validation of records in a given table in terms of NULL, PK and FK violations and inserting the
+             violated record in the error table and deleting the same from the source table
+    **********************************************************************************************************/
+    ---Start of NULL validation declaration---
+    V_STR_SELECT   VARCHAR2(4000);
+    V_MAIN_NULL    VARCHAR2(4000);
+    V_LIST_NULL    VARCHAR2(4000);
+    V_STR_WHR_NULL VARCHAR2(4000);
+    --V_DEL_STR_NULL VARCHAR2(2000);
+    V_CURR_STEP   VARCHAR2(4000);
+    V_INSERT_NULL VARCHAR2(4000);
+  
+    CURSOR C_SELECT_NULL_FIELDS IS --Cursor for selecting the Required fields
+      SELECT DISTINCT UCC.COLUMN_NAME
+        FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+       WHERE UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME
+         AND UC.TABLE_NAME = UPPER(P_TABLE)
+         AND (UC.CONSTRAINT_TYPE = 'C' OR UC.CONSTRAINT_TYPE = 'P');
+    ---Cursor to get the error record from the select list---
+    CURSOR C_RECORD_NULL IS
+      SELECT COLUMN_NAME
+        FROM USER_TAB_COLS
+       WHERE TABLE_NAME = UPPER(P_TABLE);
+    ---End of NULL Validation declaration---
+    ------------------------------------------------------------------------------------------------------------------------------
+    ---Start of PK validation declaration---
+    V_CONDITION      VARCHAR2(3000) := ' ';
+    V_GROUPBY_COLUMN VARCHAR2(3000);
+    V_MAIN_QUERY     VARCHAR2(4000) := ' ';
+    V_PK_COL_LIST    VARCHAR2(4000);
+    V_ERR_DESC_PK    VARCHAR2(2000);
+    V_INSERT_PK      VARCHAR2(4000);
+  
+    ---Cursor to get the Column names for the table---
+    CURSOR TEMP_PK IS
+      SELECT COLUMN_NAME
+        FROM USER_TAB_COLS
+       WHERE TABLE_NAME = UPPER(P_TABLE);
+    ---Cursor to get the record list for which PK validation failed---
+    CURSOR C1_PK IS
+      SELECT U1.COLUMN_NAME
+        FROM USER_CONS_COLUMNS U1
+       WHERE U1.CONSTRAINT_NAME IN
+             (SELECT UCC.CONSTRAINT_NAME
+                FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+               WHERE (UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME)
+                 AND UC.TABLE_NAME = UPPER(P_TABLE)
+                 AND UC.CONSTRAINT_TYPE = 'P');
+  
+    ---End of PK validation declaration
+    -----------------------------------------------------------------------------------------------------------------------------------------
+    ---Start of FK validation declaration
+    V_TABLE          VARCHAR2(2000) := ' ';
+    V_CHILD_COLUMN   VARCHAR2(400) := ' ';
+    V_PARENT_COULUMN VARCHAR2(400) := ' ';
+    V_INSERT_QUERY   VARCHAR2(4000) := ' ';
+    V_SELECT_LIST    VARCHAR2(4000);
+    V_AND_CONDITION  VARCHAR2(4000);
+    V_INSERT_FK      VARCHAR2(4000);
+    ---Cursor to get the column names of the table (parameter)
+    CURSOR TEMP1 IS
+      SELECT COLUMN_NAME
+        FROM USER_TAB_COLS
+       WHERE TABLE_NAME = UPPER(P_TABLE);
+    ---Cursor to get the referenced child table and the column names  along with the parent table info.
+    CURSOR C2(V_CONSTRAINT_NAME VARCHAR2) IS
+      SELECT DISTINCT CHILD1.CONSTRAINT_NAME,
+                      CHILD1.TABLE_NAME CHILD_TABLE,
+                      COL.COLUMN_NAME COL_NAME, --child column name
+                      PARENT1.TABLE_NAME, --child table name
+                      PARCOL.COLUMN_NAME --parent column name
+        FROM USER_CONSTRAINTS  CHILD1, --parent table name
+             USER_CONSTRAINTS  PARENT1,
+             USER_CONS_COLUMNS COL,
+             USER_CONS_COLUMNS PARCOL
+       WHERE CHILD1.R_CONSTRAINT_NAME = PARENT1.CONSTRAINT_NAME
+         AND CHILD1.R_OWNER = PARENT1.OWNER
+         AND CHILD1.TABLE_NAME = UPPER(P_TABLE)
+         AND CHILD1.TABLE_NAME = COL.TABLE_NAME
+         AND CHILD1.CONSTRAINT_NAME = COL.CONSTRAINT_NAME
+         AND PARENT1.TABLE_NAME = PARCOL.TABLE_NAME
+         AND COL.POSITION = PARCOL.POSITION
+         AND PARENT1.CONSTRAINT_NAME = PARCOL.CONSTRAINT_NAME
+         AND CHILD1.CONSTRAINT_NAME = V_CONSTRAINT_NAME
+       ORDER BY 1;
+  
+    CURSOR C3 IS --to get the constraint name
+      SELECT UC.CONSTRAINT_NAME
+        FROM USER_CONSTRAINTS UC
+       WHERE UC.TABLE_NAME = UPPER(P_TABLE)
+         AND UC.CONSTRAINT_TYPE = 'R';
+  
+    ---End of FK validation declaration
+    TYPE T_NAME IS REF CURSOR;
+    C_DEL T_NAME;
+    TYPE T_NAME1 IS TABLE OF TB_CDW_ERR.ROW_ID%TYPE INDEX BY PLS_INTEGER;
+    ROW_IND   T_NAME1;
+    V_DEL_STR VARCHAR2(2000);
+    -----------------------------------------------------------------------------------------------------------------------------------------
+  BEGIN
+    V_CURR_STEP := '';
+    BEGIN
+      V_CURR_STEP := 'OPENING CURSOR :
+     SELECT DISTINCT UCC.COLUMN_NAME
+      FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+     WHERE UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME
+       AND UC.TABLE_NAME = UPPER(''' || P_TABLE || ''')
+       AND (UC.CONSTRAINT_TYPE = ''C'' OR UC.CONSTRAINT_TYPE = ''P'')';
+      ---Start of null validation---
+      FOR REC IN C_SELECT_NULL_FIELDS LOOP
+        V_CURR_STEP    := '';
+        V_STR_WHR_NULL := 'TRIM(' || REC.COLUMN_NAME || ') IS NULL OR ' ||
+                          V_STR_WHR_NULL;
+        V_STR_SELECT   := 'DECODE(TRIM(' || REC.COLUMN_NAME || '), NULL,' || '''' ||
+                          REC.COLUMN_NAME || '' || '~'',''''' || ')||' ||
+                          V_STR_SELECT;
+      END LOOP;
+    
+      V_STR_WHR_NULL := RTRIM(V_STR_WHR_NULL, 'OR ');
+      V_STR_SELECT   := RTRIM(V_STR_SELECT, '||');
+      V_STR_SELECT   := (V_STR_SELECT || '||' ||
+                        '''Column/(s) Violating Null  Constraint''' ||
+                        ' AS ERR_MSG');
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+    SELECT COLUMN_NAME
+      FROM USER_TAB_COLS
+     WHERE TABLE_NAME = UPPER(''' || P_TABLE || ''')';
+      FOR REC IN C_RECORD_NULL LOOP
+        V_CURR_STEP := '';
+        V_LIST_NULL := V_LIST_NULL || '||' || '''' || REC.COLUMN_NAME || '' ||
+                       ':''' || '||' || 'a.' || REC.COLUMN_NAME ||
+                       '||''|''';
+      END LOOP;
+    
+      V_LIST_NULL := LTRIM(V_LIST_NULL, '||');
+      V_LIST_NULL := RTRIM(V_LIST_NULL, '||''|''');
+    
+      V_MAIN_NULL := 'SELECT ERROR_SEQ.NEXTVAL,
+           TO_CHAR(SYSDATE, ''YYYYMM''),
+           ''' || P_SRC_ID || ''',
+           ''' || P_FILENAME || ''',
+           ''' || P_TABLE || ''', ' || V_STR_SELECT || ' ,' ||
+                     V_LIST_NULL || ' , CURRENT_TIMESTAMP, ROWID FROM ' ||
+                     P_TABLE || ' a' || ' WHERE ' || V_STR_WHR_NULL;
+    
+      IF P_OUTPUT = 'Y' THEN
+        DBMS_OUTPUT.PUT_LINE('Dyn Query for null validation -------' ||
+                             V_MAIN_NULL);
+      END IF;
+    
+      IF V_STR_WHR_NULL IS NOT NULL THEN
+      
+        V_INSERT_NULL := 'INSERT  INTO TB_CDW_ERR ' || V_MAIN_NULL;
+        V_CURR_STEP   := V_INSERT_NULL;
+        EXECUTE IMMEDIATE v_insert_null;
+      END IF;
+      COMMIT;
+    
+    END; ---End of null validation---
+    --------------------------------------------------------------------------------------------------------------------------
+    BEGIN
+      ---Start of primary key validation---
+      V_CURR_STEP := '';
+      V_CURR_STEP := 'OPENING CURSOR :
+    SELECT U1.COLUMN_NAME
+      FROM USER_CONS_COLUMNS U1
+     WHERE U1.CONSTRAINT_NAME IN
+           (SELECT UCC.CONSTRAINT_NAME
+              FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+             WHERE (UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME)
+               AND UC.TABLE_NAME = UPPER(''' || P_TABLE || ''')
+               AND UC.CONSTRAINT_TYPE = ''P'')';
+      FOR I IN C1_PK LOOP
+        V_CONDITION := V_CONDITION || ' AND a.' || I.COLUMN_NAME || '= b.' ||
+                       I.COLUMN_NAME;
+      END LOOP;
+      V_CURR_STEP := '';
+    
+      V_CONDITION := LTRIM(V_CONDITION, ' AND ');
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+    SELECT U1.COLUMN_NAME
+      FROM USER_CONS_COLUMNS U1
+     WHERE U1.CONSTRAINT_NAME IN
+           (SELECT UCC.CONSTRAINT_NAME
+              FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+             WHERE (UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME)
+               AND UC.TABLE_NAME = UPPER(''' || P_TABLE || ''')
+               AND UC.CONSTRAINT_TYPE = ''P'')';
+      FOR REC IN C1_PK LOOP
+        V_GROUPBY_COLUMN := V_GROUPBY_COLUMN || ',' || REC.COLUMN_NAME;
+        V_ERR_DESC_PK    := V_ERR_DESC_PK || '~' || REC.COLUMN_NAME;
+      END LOOP;
+      V_CURR_STEP      := '';
+      V_ERR_DESC_PK    := LTRIM(V_ERR_DESC_PK, '~');
+      V_ERR_DESC_PK    := V_ERR_DESC_PK ||
+                          '~Column/(s) Violating Primary Key Constrain';
+      V_GROUPBY_COLUMN := LTRIM(V_GROUPBY_COLUMN, ',');
+    
+      V_CURR_STEP := 'OPENING CURSOR:
+    SELECT COLUMN_NAME
+      FROM USER_TAB_COLS
+     WHERE TABLE_NAME = UPPER(''' || P_TABLE || ''')';
+      FOR REC IN TEMP_PK LOOP
+        V_PK_COL_LIST := V_PK_COL_LIST || '||' || '''' || REC.COLUMN_NAME || '' ||
+                         ':''' || '||' || 'a.' || REC.COLUMN_NAME ||
+                         '||''|''';
+      END LOOP;
+      V_CURR_STEP   := '';
+      V_PK_COL_LIST := LTRIM(V_PK_COL_LIST, '||');
+      V_PK_COL_LIST := RTRIM(V_PK_COL_LIST, '||''|''');
+    
+      V_MAIN_QUERY := ' SELECT ERROR_SEQ.NEXTVAL,
+             TO_CHAR(SYSDATE, ''YYYYMM''),' || '''' ||
+                      P_SRC_ID || ''',' || '''' || P_FILENAME || ''',' || '''' ||
+                      P_TABLE || ''',' || '''' || V_ERR_DESC_PK || ''', ' ||
+                      V_PK_COL_LIST || ', SYSDATE, A.ROWID  FROM ' ||
+                      P_TABLE || '  a  ' || '  LEFT OUTER JOIN (SELECT ' ||
+                      V_GROUPBY_COLUMN || ' , COUNT(1) CNT
+                FROM  ' || P_TABLE || '  b  ' ||
+                      ' GROUP BY ' || V_GROUPBY_COLUMN || ' )  b ON (' ||
+                      V_CONDITION || ' )  WHERE b.CNT > 1';
+    
+      IF P_OUTPUT = 'Y' THEN
+        DBMS_OUTPUT.PUT_LINE('Dyn query for Primary key validation -----' ||
+                             V_MAIN_QUERY);
+      END IF;
+    
+      IF V_CONDITION IS NOT NULL THEN
+        V_INSERT_PK := 'INSERT INTO tb_cdw_err ' || V_MAIN_QUERY;
+        V_CURR_STEP := V_INSERT_PK;
+        EXECUTE IMMEDIATE V_INSERT_PK;
+      END IF;
+      COMMIT;
+    
+    END; ---end of PK validation---
+    ----------------------------------------------------------------------------------------------------------------------------------------
+    BEGIN
+      V_CURR_STEP := '';
+      ---Start of foreign key validation---
+    
+      V_CURR_STEP := 'SELECT COLUMN_NAME
+      FROM USER_TAB_COLS
+     WHERE TABLE_NAME = UPPER( ''' || P_TABLE || ''')';
+      FOR REC IN TEMP1 LOOP
+        V_CURR_STEP   := '';
+        V_SELECT_LIST := V_SELECT_LIST || '||' || '''' || REC.COLUMN_NAME || '' ||
+                         ':''' || '||' || 'Tpx.' || REC.COLUMN_NAME ||
+                         '||''|''';
+      END LOOP;
+      V_SELECT_LIST := LTRIM(V_SELECT_LIST, '||');
+      V_SELECT_LIST := RTRIM(V_SELECT_LIST, '||''|''');
+    
+      V_CURR_STEP := 'SELECT UC.CONSTRAINT_NAME
+      FROM USER_CONSTRAINTS UC
+     WHERE UC.TABLE_NAME = UPPER( ''' || P_TABLE || ''')
+       AND UC.CONSTRAINT_TYPE = ''R''';
+      FOR REC IN C3 LOOP
+      
+        V_CURR_STEP := 'SELECT DISTINCT CHILD1.CONSTRAINT_NAME,
+                    CHILD1.TABLE_NAME CHILD_TABLE,
+                    COL.COLUMN_NAME COL_NAME, --child column name
+                    PARENT1.TABLE_NAME, --child table name
+                    PARCOL.COLUMN_NAME --parent column name
+      FROM USER_CONSTRAINTS  CHILD1, --parent table name
+           USER_CONSTRAINTS  PARENT1,
+           USER_CONS_COLUMNS COL,
+           USER_CONS_COLUMNS PARCOL
+     WHERE CHILD1.R_CONSTRAINT_NAME = PARENT1.CONSTRAINT_NAME
+       AND CHILD1.R_OWNER = PARENT1.OWNER
+       AND CHILD1.TABLE_NAME = UPPER( ''' || P_TABLE || ''')
+       AND CHILD1.TABLE_NAME = COL.TABLE_NAME
+       AND CHILD1.CONSTRAINT_NAME = COL.CONSTRAINT_NAME
+       AND PARENT1.TABLE_NAME = PARCOL.TABLE_NAME
+       AND COL.POSITION = PARCOL.POSITION
+       AND PARENT1.CONSTRAINT_NAME = PARCOL.CONSTRAINT_NAME
+       AND CHILD1.CONSTRAINT_NAME = ''' ||
+                       REC.CONSTRAINT_NAME || '''
+     ORDER BY 1';
+        FOR REC1 IN C2(REC.CONSTRAINT_NAME) LOOP
+          --For child table and referenced column
+          V_CURR_STEP      := '';
+          V_TABLE          := REC1.TABLE_NAME;
+          V_PARENT_COULUMN := V_PARENT_COULUMN || ',' || REC1.COLUMN_NAME;
+          V_AND_CONDITION  := V_AND_CONDITION || REC1.COL_NAME ||
+                              ' IS NOT NULL AND  ';
+          V_CHILD_COLUMN   := V_CHILD_COLUMN || ',' || REC1.COL_NAME;
+        END LOOP;
+      
+        V_PARENT_COULUMN := LTRIM(V_PARENT_COULUMN, ' ,');
+        V_CHILD_COLUMN   := LTRIM(V_CHILD_COLUMN, ' ,');
+        V_AND_CONDITION  := RTRIM(V_AND_CONDITION, '  AND ');
+        V_INSERT_QUERY   := ' SELECT ERROR_SEQ.NEXTVAL,
+             TO_CHAR(SYSDATE, ''YYYYMM''),' || '''' ||
+                            P_SRC_ID || ''',' || '''' || P_FILENAME ||
+                            ''',' || '''' || P_TABLE || ''',' ||
+                            REPLACE('''' || V_CHILD_COLUMN || '',
+                                    ''',''',
+                                    '''~''') ||
+                            '~Column Violating Foreign Key Constraint''' || ' ,' ||
+                            V_SELECT_LIST || ', SYSDATE, Tpx.ROWID  FROM ' ||
+                            P_TABLE || ' Tpx' || '  WHERE (  ' ||
+                            V_CHILD_COLUMN || '  ) not in ( select ' ||
+                            V_PARENT_COULUMN || '
+                FROM ' || V_TABLE || ' Tpc )' ||
+                            ' AND  ' || V_AND_CONDITION;
+      
+        IF P_OUTPUT = 'Y' THEN
+          DBMS_OUTPUT.PUT_LINE('Dyn query for Foreign Key ----' ||
+                               V_INSERT_QUERY);
+        END IF;
+        V_INSERT_FK := 'INSERT INTO TB_CDW_ERR ' || V_INSERT_QUERY;
+        V_CURR_STEP := V_INSERT_FK;
+        EXECUTE IMMEDIATE (V_INSERT_FK);
+      
+        V_CURR_STEP      := '';
+        V_CHILD_COLUMN   := '';
+        V_PARENT_COULUMN := '';
+        V_AND_CONDITION  := '';
+      END LOOP;
+      COMMIT;
+    END; ---end of FK
+  
+    V_CURR_STEP := 'EXECUTE IMMEDIATE  ''DELETE FROM ''' || P_TABLE ||
+                   '''  WHERE ROWID = :1''';
+    BEGIN
+      V_DEL_STR := 'select row_id from tb_cdw_ERR WHERE SRCE_SYS_ID=''' ||
+                   P_SRC_ID || ''' AND TAB_NAME =''' || P_TABLE || '''';
+      OPEN C_DEL FOR V_DEL_STR;
+      LOOP
+        FETCH C_DEL BULK COLLECT
+          INTO ROW_IND LIMIT 10000;
+        EXIT WHEN ROW_IND.COUNT = 0;
+        FORALL I IN 1 .. ROW_IND.COUNT EXECUTE IMMEDIATE
+                         'DELETE FROM ' || P_TABLE || '  WHERE ROWID = :1'
+                         USING ROW_IND(I)
+          ;
+        COMMIT;
+      END LOOP;
+      CLOSE C_DEL;
+    END;
+  
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_EXCPTN_HANDLING : ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR(-20001, SQLERRM);
+  END SP_EXCPTN_HANDLING;
+  
+   ------------------------------------------SP_REJ_EXCPTN_HANDLING------------------------------------------------
+  PROCEDURE SP_REJ_EXCPTN_HANDLING(P_TABLE       VARCHAR2,
+                                   P_REJ_TABLE   IN VARCHAR2,
+                                   P_SUBSYS_NAME IN VARCHAR2,
+                                   P_ROWID_ACT IN VARCHAR2) AS
+    /*****************************************************************************
+    Created on :20th May 2009
+    Created by : Swati Chincholkar
+    Purpose: Validation the record in a given table in terms of Null ,PK and FK vaiolation. And inserting the 
+             vaoilated record in the Reject table with ROWID and deleting the same from the given table
+             Irrespective of P_ROWID_ACT value, this procedure will insert ROWID value in reject table. This 
+             parameter is just used to overload the function
+    ******************************************************************************/
+    --STRAT of NULL VALIDATION DECLARTION
+    V_WHR_CONDITION      VARCHAR2(4000);
+    V_MAIN_NULL          VARCHAR2(4000);
+    V_COL_VIOLATING_NULL VARCHAR2(4000);
+    V_LIST_NULL          VARCHAR2(4000);
+    V_DELETE_STRING_NULL VARCHAR2(2000);
+    V_INSERT_COLUMN_NULL VARCHAR2(4000);
+    V_FIXED_COLUMN_NULL  VARCHAR2(200) := 'err_cd,err_desc,Load_mth,reprocess_flg,err_ts,err_skey,row_id)';
+    V_INSERT_NULL        VARCHAR2(4000);
+    V_CURR_STEP          VARCHAR2(4000) := '';
+  
+    CURSOR C_REQ_COLUMNS IS --Cursor to get the required fields from the data dictionary.
+      SELECT DISTINCT UCC.COLUMN_NAME
+        FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+       WHERE UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME
+         AND UC.TABLE_NAME = UPPER(P_TABLE)
+         AND (UC.CONSTRAINT_TYPE = 'C' OR UC.CONSTRAINT_TYPE = 'P');
+  
+    CURSOR C_REC IS --Cursor to get the column list as per the position of the given table.
+      SELECT COLUMN_NAME
+        FROM USER_TAB_COLS
+       WHERE TABLE_NAME = UPPER(P_TABLE)
+       ORDER BY COLUMN_ID;
+  
+    --END of NULL VALIDATION DECLARTION----------------------------------------------------------------------------------------------
+  
+    --Strat of PK declaration
+    V_CONDITION        VARCHAR2(3000) := ' ';
+    V_GROUPBY_COLUMN   VARCHAR2(3000);
+    V_MAIN_QUERY       VARCHAR2(4000) := ' ';
+    V_DELETE_COLUMN    VARCHAR2(4000);
+    V_SUB_QRY_PK       VARCHAR2(4000) := ' ';
+    V_DELETE_STRING_PK VARCHAR2(2000) := ' ';
+    V_ERR_DESC_PK      VARCHAR2(2000);
+    V_INSERT_COLUMN_PK VARCHAR2(4000);
+    V_FIXED_COLUMN_PK  VARCHAR2(200) := 'err_cd,err_desc,Load_mth,reprocess_flg,err_ts,err_skey,row_id)';
+    V_INSERT_PK        VARCHAR2(4000);
+    --Cursor to get the Column names for the table(parameter)
+    CURSOR TEMP_PK IS
+      SELECT U.COLUMN_NAME
+        FROM USER_TAB_COLS U
+       WHERE TABLE_NAME = UPPER(P_TABLE)
+       ORDER BY U.COLUMN_ID;
+    --Cursor to get the record list for which PK validation failed           
+    CURSOR C1_PK_REJ IS
+      SELECT U1.COLUMN_NAME
+        FROM USER_CONS_COLUMNS U1
+       WHERE U1.CONSTRAINT_NAME IN
+             (SELECT UCC.CONSTRAINT_NAME
+                FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+               WHERE (UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME)
+                 AND UC.TABLE_NAME = UPPER(P_TABLE)
+                 AND UC.CONSTRAINT_TYPE = 'P');
+    --End of PK declaration
+    --------------------------------------------------------------------------------------------------------------------------------
+  
+    --strat of FK validation declaration
+    V_CHILD_COLUMN     VARCHAR2(400) := ' ';
+    V_PARENT_COULUMN   VARCHAR2(400) := ' ';
+    V_TABLE            VARCHAR2(2000) := ' ';
+    V_DELETE_STRING_FK VARCHAR2(2300) := ' ';
+    V_SUB_QRY_FK       VARCHAR2(4000) := ' ';
+    V_MAIN_QUERY_FK    VARCHAR2(4000) := ' ';
+    V_AND_CONDITION    VARCHAR2(4000);
+    V_INSERT_COLUMN_FK VARCHAR2(4000);
+    V_FIXED_COLUMN_FK  VARCHAR2(200) := 'err_cd,err_desc,Load_mth,reprocess_flg,err_ts,err_skey,row_id)';
+    V_INSERT_FK        VARCHAR2(4000);
+    --Cursor to get the column names of the table (parameter)
+    CURSOR TEMP1 IS
+      SELECT U.COLUMN_NAME
+        FROM USER_TAB_COLS U
+       WHERE TABLE_NAME = UPPER(P_TABLE)
+       ORDER BY U.COLUMN_ID;
+    --Cursor to get the referenced child table and the column names   
+    CURSOR C2(V_CONSTRAINT_NAME VARCHAR2) IS
+      SELECT DISTINCT CHILD1.CONSTRAINT_NAME,
+                      CHILD1.TABLE_NAME CHILD_TABLE,
+                      COL.COLUMN_NAME COL_NAME, --child column name
+                      PARENT1.TABLE_NAME, --child table name
+                      PARCOL.COLUMN_NAME --parent column name
+        FROM USER_CONSTRAINTS  CHILD1, --parent table name
+             USER_CONSTRAINTS  PARENT1,
+             USER_CONS_COLUMNS COL,
+             USER_CONS_COLUMNS PARCOL
+       WHERE CHILD1.R_CONSTRAINT_NAME = PARENT1.CONSTRAINT_NAME
+         AND CHILD1.R_OWNER = PARENT1.OWNER
+         AND CHILD1.TABLE_NAME = UPPER(P_TABLE)
+         AND CHILD1.TABLE_NAME = COL.TABLE_NAME
+         AND CHILD1.CONSTRAINT_NAME = COL.CONSTRAINT_NAME
+         AND PARENT1.TABLE_NAME = PARCOL.TABLE_NAME
+         AND COL.POSITION = PARCOL.POSITION
+         AND PARENT1.CONSTRAINT_NAME = PARCOL.CONSTRAINT_NAME
+         AND CHILD1.CONSTRAINT_NAME = V_CONSTRAINT_NAME
+       ORDER BY 1;
+  
+    CURSOR C3 IS --to get the constraint name
+      SELECT UC.CONSTRAINT_NAME
+        FROM USER_CONSTRAINTS UC
+       WHERE UC.TABLE_NAME = UPPER(P_TABLE)
+         AND UC.CONSTRAINT_TYPE = 'R';
+    --End of FK validation declaration
+    ---------------------------------------------------------------------------------------------------------------------------------
+  BEGIN
+    BEGIN
+      V_CURR_STEP := 'OPENING CURSOR :
+                SELECT DISTINCT  UCC.COLUMN_NAME
+                FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+                WHERE UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME
+                AND UC.TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                AND (UC.CONSTRAINT_TYPE = ''C''
+                OR  UC.CONSTRAINT_TYPE = ''P'')';
+      --Start of Null
+      FOR REC IN C_REQ_COLUMNS LOOP
+        V_CURR_STEP          := '';
+        V_WHR_CONDITION      := REC.COLUMN_NAME || ' IS NULL OR ' ||
+                                V_WHR_CONDITION;
+        V_COL_VIOLATING_NULL := 'DECODE(TRIM(' || REC.COLUMN_NAME ||
+                                '), NULL,' || '''' || REC.COLUMN_NAME || '' ||
+                                '~'',''''' || ')||' || V_COL_VIOLATING_NULL;
+      END LOOP;
+    
+      V_WHR_CONDITION      := RTRIM(V_WHR_CONDITION, 'OR ');
+      V_COL_VIOLATING_NULL := RTRIM(V_COL_VIOLATING_NULL, '||');
+      V_COL_VIOLATING_NULL := (V_COL_VIOLATING_NULL || '||' ||
+                              '''Column/(s) Violating Null  Constraint''' ||
+                              ' AS ERR_MSG');
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                              SELECT COLUMN_NAME
+                              FROM USER_TAB_COLS
+                              WHERE TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                              ORDER BY column_id';
+      FOR REC IN C_REC LOOP
+        V_CURR_STEP          := '';
+        V_LIST_NULL          := V_LIST_NULL || '||' || '''' ||
+                                REC.COLUMN_NAME || '' || ':''' || '||' || 'a.' ||
+                                REC.COLUMN_NAME || '||''|''';
+        V_INSERT_COLUMN_NULL := V_INSERT_COLUMN_NULL || ',' ||
+                                REC.COLUMN_NAME;
+      END LOOP;
+    
+      V_INSERT_COLUMN_NULL := LTRIM(V_INSERT_COLUMN_NULL, ',');
+      --    V_LIST_NULL          := LTRIM(V_LIST_NULL, '||');
+      --  V_LIST_NULL          := RTRIM(V_LIST_NULL, '||''|''');
+      V_MAIN_NULL := ' SELECT a.*, ' || '''' || P_SUBSYS_NAME || '_2''' ||
+                     ',  ' || /*'''' ||*/
+                     V_COL_VIOLATING_NULL || /*'''' ||*/
+                     ',  ' || '''' || TO_CHAR(SYSDATE, 'yyyymm') || '''' ||
+                     '  ,' || '''N''' || ' ,' || ' current_timestamp' || ' ,' ||
+                     'error_seq.nextval, ROWID ' || ' from ' || P_TABLE || ' a' ||
+                     ' where ' || V_WHR_CONDITION;
+      IF V_WHR_CONDITION IS NOT NULL THEN
+      
+        --dbms_output.put_line(v_main_null);
+        V_INSERT_NULL := 'Insert into ' || P_REJ_TABLE || '( ' ||
+                         V_INSERT_COLUMN_NULL || ',' || V_FIXED_COLUMN_NULL ||
+                         V_MAIN_NULL;
+        --dbms_output.put_line('V_INSERT_NULL   ' || V_INSERT_NULL);
+      
+        --dbms_output.put_line(V_INSERT_NULL);
+        V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_INSERT_NULL;
+        EXECUTE IMMEDIATE V_INSERT_NULL;
+      END IF;
+      COMMIT;
+      /*                EXCEPTION
+      WHEN OTHERS THEN
+      dbms_output.put_line(SQLERRM || '---Null validation error');*/
+    END; ---end of null
+    ----------------------------------------------------------------------------------------------------------------------------------
+    BEGIN
+      V_CURR_STEP := '';
+      ---start of PK
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                        SELECT U1.COLUMN_NAME
+                        FROM USER_CONS_COLUMNS U1
+                        WHERE U1.CONSTRAINT_NAME IN
+                        (SELECT UCC.CONSTRAINT_NAME
+                        FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+                        WHERE (UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME)
+                        AND UC.TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                        AND UC.CONSTRAINT_TYPE = ''P'')';
+      FOR I IN C1_PK_REJ LOOP
+        V_CURR_STEP := '';
+        V_CONDITION := V_CONDITION || ' AND a.' || I.COLUMN_NAME || '= b.' ||
+                       I.COLUMN_NAME;
+      END LOOP;
+    
+      V_CONDITION := LTRIM(V_CONDITION, ' AND ');
+      -- DBMS_OUTPUT.PUT_LINE(V_CONDITION);
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                                SELECT U1.COLUMN_NAME
+                                FROM USER_CONS_COLUMNS U1
+                                WHERE U1.CONSTRAINT_NAME IN
+                                (SELECT UCC.CONSTRAINT_NAME
+                                FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+                                WHERE (UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME)
+                                AND UC.TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                                AND UC.CONSTRAINT_TYPE = ''P'')';
+      FOR REC IN C1_PK_REJ LOOP
+        V_CURR_STEP      := '';
+        V_GROUPBY_COLUMN := V_GROUPBY_COLUMN || ',' || REC.COLUMN_NAME;
+        V_DELETE_COLUMN  := V_DELETE_COLUMN || ',' || 'a.' ||
+                            REC.COLUMN_NAME;
+        V_ERR_DESC_PK    := V_ERR_DESC_PK || '~' || REC.COLUMN_NAME;
+      END LOOP;
+    
+      V_ERR_DESC_PK := LTRIM(V_ERR_DESC_PK, '~');
+      V_ERR_DESC_PK := V_ERR_DESC_PK ||
+                       '~Column/(s) Violating Primary Key Constraint';
+      --dbms_output.put_line(V_ERR_DESC_PK);
+      V_GROUPBY_COLUMN := LTRIM(V_GROUPBY_COLUMN, ',');
+      -- DBMS_OUTPUT.PUT_LINE(V_GROUPBY_COLUMN);
+      V_DELETE_COLUMN := LTRIM(V_DELETE_COLUMN, ',');
+      -- DBMS_OUTPUT.PUT_LINE('-----------------'||V_STR_Dlt);
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                                SELECT u.COLUMN_NAME
+                                FROM USER_TAB_COLS u
+                                WHERE TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                                ORDER BY u.column_id';
+      FOR REC IN TEMP_PK LOOP
+        V_CURR_STEP        := '';
+        V_INSERT_COLUMN_PK := V_INSERT_COLUMN_PK || ',' || REC.COLUMN_NAME;
+      END LOOP;
+    
+      V_INSERT_COLUMN_PK := LTRIM(V_INSERT_COLUMN_PK, ',');
+      --dbms_output.put_line('V_ins_col              ' || V_INSERT_COLUMN_PK);
+    
+      V_MAIN_QUERY := ' SELECT a.*, ' || '''' || P_SUBSYS_NAME || '_0''' ||
+                      ',  ' || '''' || V_ERR_DESC_PK || '''' || ',  ' || '''' ||
+                      TO_CHAR(SYSDATE, 'yyyyMm') || '''' || '  ,' ||
+                      '''N''' || ' ,' || ' current_timestamp' || ' ,' ||
+                      'error_seq.nextval, a.ROWID ' || '  FROM ' || P_TABLE ||
+                      '  a  ' || '  LEFT OUTER JOIN (SELECT ' ||
+                      V_GROUPBY_COLUMN || ' , COUNT(1) CNT
+                FROM  ' || P_TABLE || '  b  ' ||
+                      ' GROUP BY ' || V_GROUPBY_COLUMN || ' )  b ON (' ||
+                      V_CONDITION || ' )  WHERE b.CNT > 1';
+    
+      IF V_CONDITION IS NOT NULL THEN
+        V_INSERT_PK := 'Insert into ' || P_REJ_TABLE || '( ' ||
+                       V_INSERT_COLUMN_PK || ',' || V_FIXED_COLUMN_PK ||
+                       V_MAIN_QUERY;
+      
+        -- DBMS_OUTPUT.PUT_LINE('v_ins_str                 ' || V_INSERT_PK);
+        V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_INSERT_PK;
+        EXECUTE IMMEDIATE V_INSERT_PK;
+      END IF;
+      COMMIT;
+      V_CURR_STEP  := V_SUB_QRY_PK;
+      V_SUB_QRY_PK := ' (SELECT ' || V_DELETE_COLUMN || '  FROM ' ||
+                      P_TABLE || '  a  ' || '  LEFT OUTER JOIN (SELECT ' ||
+                      V_GROUPBY_COLUMN || ' , COUNT(1) CNT
+                FROM  ' || P_TABLE || '  b  ' ||
+                      ' GROUP BY ' || V_GROUPBY_COLUMN || ' )  b ON (' ||
+                      V_CONDITION || ' )  WHERE b.CNT > 1)';
+    
+      /*                EXCEPTION
+      WHEN OTHERS THEN
+      dbms_output.put_line(SQLERRM);
+          */
+    END; ---end of PK
+    ---------------------------------------------------------------------------------------------------
+  
+    BEGIN
+      --STRAT OF FK
+      V_CURR_STEP := '';
+      --Get the insert record and delete column list 
+      V_CURR_STEP := 'OPENING CURSOR :
+                              SELECT u.COLUMN_NAME
+                              FROM USER_TAB_COLS u
+                              WHERE TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                              ORDER BY u.column_id';
+      FOR REC IN TEMP1 LOOP
+        V_CURR_STEP        := '';
+        V_INSERT_COLUMN_FK := V_INSERT_COLUMN_FK || ',' || REC.COLUMN_NAME;
+      END LOOP;
+    
+      V_CURR_STEP        := '';
+      V_INSERT_COLUMN_FK := LTRIM(V_INSERT_COLUMN_FK, ',');
+      DBMS_OUTPUT.PUT_LINE('V_ins_col              ' || V_INSERT_COLUMN_FK);
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                        SELECT uc.constraint_name
+                        FROM User_Constraints uc
+                        WHERE uc.table_name = UPPER( ''' ||
+                     P_TABLE || ''')
+                        AND uc.constraint_type = ''R''';
+      FOR REC IN C3 LOOP
+      
+        V_CURR_STEP := 'OPENING CURSOR :
+                                  SELECT DISTINCT CHILD1.CONSTRAINT_NAME,
+                                  CHILD1.TABLE_NAME CHILD_TABLE,
+                                  COL.COLUMN_NAME COL_NAME, --child column name
+                                  PARENT1.TABLE_NAME, --child table name
+                                  PARCOL.COLUMN_NAME --parent column name
+                                  FROM USER_CONSTRAINTS  CHILD1, --parent table name
+                                  USER_CONSTRAINTS  PARENT1,
+                                  USER_CONS_COLUMNS COL,
+                                  USER_CONS_COLUMNS PARCOL
+                                  WHERE CHILD1.R_CONSTRAINT_NAME = PARENT1.CONSTRAINT_NAME
+                                  AND CHILD1.R_OWNER = PARENT1.OWNER
+                                  AND CHILD1.TABLE_NAME = upper( ''' ||
+                       P_TABLE || ''')
+                                  AND CHILD1.TABLE_NAME = COL.TABLE_NAME
+                                  AND CHILD1.CONSTRAINT_NAME = COL.CONSTRAINT_NAME
+                                  AND PARENT1.TABLE_NAME = PARCOL.TABLE_NAME
+                                  AND COL.POSITION = PARCOL.POSITION
+                                  AND PARENT1.CONSTRAINT_NAME = PARCOL.CONSTRAINT_NAME
+                                  AND child1.constraint_name = v_constraint_name
+                                  ORDER BY 1';
+        FOR REC1 IN C2(REC.CONSTRAINT_NAME) LOOP
+          --For child table and referenced column
+          V_CURR_STEP      := '';
+          V_TABLE          := REC1.TABLE_NAME;
+          V_PARENT_COULUMN := V_PARENT_COULUMN || ',' || REC1.COLUMN_NAME;
+          V_AND_CONDITION  := V_AND_CONDITION || REC1.COL_NAME ||
+                              ' IS NOT NULL AND  ';
+          V_CHILD_COLUMN   := V_CHILD_COLUMN || ',' || REC1.COL_NAME;
+        END LOOP;
+      
+        V_PARENT_COULUMN := LTRIM(V_PARENT_COULUMN, ' ,');
+        V_CHILD_COLUMN   := LTRIM(V_CHILD_COLUMN, ' ,');
+        V_AND_CONDITION  := RTRIM(V_AND_CONDITION, '  AND ');
+        -- dbms_output.put_line('-----------------------' || V_AND_CONDITION);
+      
+        V_MAIN_QUERY_FK := ' SELECT Tpx.*, ' || '''' || P_SUBSYS_NAME ||
+                           '_1''' || ',  ' || '''' ||
+                           REPLACE(V_CHILD_COLUMN, ',', '~') ||
+                           '~Column/(s) Violating Foreign Key Constraint ' || '''' ||
+                           ',  ' || '''' || TO_CHAR(SYSDATE, 'yyyymm') || '''' ||
+                           '  ,' || '''N''' || ' ,' || ' current_timestamp' || ' ,' ||
+                           'error_seq.nextval, Tpx.ROWID ' || '  FROM ' || P_TABLE ||
+                           ' Tpx' || '  WHERE (  ' || V_CHILD_COLUMN ||
+                           '  ) not in ( select ' || V_PARENT_COULUMN || '
+                from ' || V_TABLE || ' Tpc )' ||
+                           ' AND  ' || V_AND_CONDITION;
+      
+        V_INSERT_FK := 'Insert into ' || P_REJ_TABLE || '( ' ||
+                       V_INSERT_COLUMN_FK || ',' || V_FIXED_COLUMN_FK ||
+                       V_MAIN_QUERY_FK;
+      
+        --  DBMS_OUTPUT.PUT_LINE('v_ins_str                 ' || V_INSERT_FK);
+        V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_INSERT_FK;
+        EXECUTE IMMEDIATE V_INSERT_FK;
+        COMMIT;
+        V_CHILD_COLUMN   := '';
+        V_PARENT_COULUMN := '';
+        V_AND_CONDITION  := '';
+      END LOOP;
+      COMMIT;
+    
+      /*                    EXCEPTION
+      WHEN OTHERS THEN
+      dbms_output.put_line(SQLERRM || '---FK validation error');*/
+    END; ---end of FK
+  
+    BEGIN
+      V_CURR_STEP := '';
+      BEGIN
+        --delete for pk
+        IF V_DELETE_COLUMN IS NOT NULL THEN
+          V_DELETE_STRING_PK := ' DELETE FROM ' || P_TABLE ||
+                                '  a  WHERE ( ' || V_GROUPBY_COLUMN ||
+                                ' ) IN ' || V_SUB_QRY_PK;
+          DBMS_OUTPUT.PUT_LINE(V_DELETE_STRING_PK);
+          V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_DELETE_STRING_PK;
+          EXECUTE IMMEDIATE V_DELETE_STRING_PK;
+        END IF;
+        COMMIT;
+        /*                        EXCEPTION
+        WHEN OTHERS THEN
+        DBMS_OUTPUT.put_line('Error in deleting record for PK   ' ||
+        SQLERRM);*/
+      END;
+    
+      BEGIN
+        --delete for Null 
+        IF V_WHR_CONDITION IS NOT NULL THEN
+          V_DELETE_STRING_NULL := 'delete from ' || P_TABLE || ' where ' ||
+                                  V_WHR_CONDITION;
+          V_CURR_STEP          := 'EXECUTE IMMEDIATE ' ||
+                                  V_DELETE_STRING_NULL;
+          EXECUTE IMMEDIATE V_DELETE_STRING_NULL;
+          COMMIT;
+        END IF;
+        /*                        EXCEPTION
+        WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Problem in delete for null validation   ' ||
+        SQLERRM);*/
+      END;
+    
+      BEGIN
+        --delete for FK
+        V_CURR_STEP := 'OPENING CURSOR :
+                                SELECT uc.constraint_name
+                                FROM User_Constraints uc
+                                WHERE uc.table_name = UPPER( ''' ||
+                       P_TABLE || ''')
+                                AND uc.constraint_type = ''R''';
+        FOR REC IN C3 LOOP
+        
+          V_CURR_STEP := 'OPENING CURSOR : 
+                                  SELECT DISTINCT CHILD1.CONSTRAINT_NAME,
+                                  CHILD1.TABLE_NAME CHILD_TABLE,
+                                  COL.COLUMN_NAME COL_NAME, --child column name
+                                  PARENT1.TABLE_NAME, --child table name
+                                  PARCOL.COLUMN_NAME --parent column name
+                                  FROM USER_CONSTRAINTS  CHILD1, --parent table name
+                                  USER_CONSTRAINTS  PARENT1,
+                                  USER_CONS_COLUMNS COL,
+                                  USER_CONS_COLUMNS PARCOL
+                                  WHERE CHILD1.R_CONSTRAINT_NAME = PARENT1.CONSTRAINT_NAME
+                                  AND CHILD1.R_OWNER = PARENT1.OWNER
+                                  AND CHILD1.TABLE_NAME = upper( ''' ||
+                         P_TABLE || ''')
+                                  AND CHILD1.TABLE_NAME = COL.TABLE_NAME
+                                  AND CHILD1.CONSTRAINT_NAME = COL.CONSTRAINT_NAME
+                                  AND PARENT1.TABLE_NAME = PARCOL.TABLE_NAME
+                                  AND COL.POSITION = PARCOL.POSITION
+                                  AND PARENT1.CONSTRAINT_NAME = PARCOL.CONSTRAINT_NAME
+                                  AND child1.constraint_name = ''' ||
+                         REC.CONSTRAINT_NAME || '''
+                                  ORDER BY 1';
+          FOR REC1 IN C2(REC.CONSTRAINT_NAME) LOOP
+            --For child table and referenced column
+            V_CURR_STEP      := '';
+            V_TABLE          := REC1.TABLE_NAME;
+            V_PARENT_COULUMN := V_PARENT_COULUMN || ',' || REC1.COLUMN_NAME;
+            V_AND_CONDITION  := V_AND_CONDITION || REC1.COL_NAME ||
+                                ' IS NOT NULL AND  ';
+            V_CHILD_COLUMN   := V_CHILD_COLUMN || ',' || REC1.COL_NAME;
+          END LOOP;
+        
+          V_PARENT_COULUMN := LTRIM(V_PARENT_COULUMN, ' ,');
+          V_CHILD_COLUMN   := LTRIM(V_CHILD_COLUMN, ' ,');
+          V_AND_CONDITION  := RTRIM(V_AND_CONDITION, '  AND ');
+          --dbms_output.put_line('-----------------------' || V_AND_CONDITION);
+        
+          V_SUB_QRY_FK := 'SELECT ' || V_CHILD_COLUMN || '  FROM ' ||
+                          P_TABLE || ' Tpx' || '  WHERE ( ' ||
+                          V_CHILD_COLUMN || '  ) not in ( select ' ||
+                          V_PARENT_COULUMN || '
+                        from ' || V_TABLE ||
+                          ' Tpc )' || ' AND  ' || V_AND_CONDITION;
+        
+          V_DELETE_STRING_FK := ' DELETE FROM ' || P_TABLE ||
+                                '  tpx  WHERE ( ' || V_CHILD_COLUMN ||
+                                ' ) IN ' || '( ' || V_SUB_QRY_FK || ' )';
+          --DBMS_OUTPUT.PUT_LINE(V_DELETE_STRING_FK);
+          V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_DELETE_STRING_FK;
+          EXECUTE IMMEDIATE V_DELETE_STRING_FK;
+        
+          V_CHILD_COLUMN   := '';
+          V_PARENT_COULUMN := '';
+          V_AND_CONDITION  := '';
+          V_CURR_STEP      := '';
+        END LOOP;
+        COMMIT;
+        /*                        EXCEPTION
+        WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Problem in delete for FK validation   ' ||
+        SQLERRM);*/
+      END;
+    
+    END;
+  
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_REJ_EXCPTN_HANDLING : ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR(-20001, SQLERRM);
+    
+  END SP_REJ_EXCPTN_HANDLING;
+  ------------------------------------------SP_REJ_EXCPTN_HANDLING------------------------------------------------
+  PROCEDURE SP_REJ_EXCPTN_HANDLING(P_TABLE       VARCHAR2,
+                                   P_REJ_TABLE   IN VARCHAR2,
+                                   P_SUBSYS_NAME IN VARCHAR2) AS
+    /*****************************************************************************
+    Created on :30th June 2008
+    Created by : Sourav Chandra
+    Purpose: Validation the record in a given table in terms of Null ,PK and FK vaiolation. And inserting the 
+                        vaoilated record in the Reject table and deleting the same from the given table
+    ******************************************************************************/
+    --STRAT of NULL VALIDATION DECLARTION
+    V_WHR_CONDITION      VARCHAR2(4000);
+    V_MAIN_NULL          VARCHAR2(4000);
+    V_COL_VIOLATING_NULL VARCHAR2(4000);
+    V_LIST_NULL          VARCHAR2(4000);
+    V_DELETE_STRING_NULL VARCHAR2(2000);
+    V_INSERT_COLUMN_NULL VARCHAR2(4000);
+    V_FIXED_COLUMN_NULL  VARCHAR2(200) := 'err_cd,err_desc,Load_mth,reprocess_flg,err_ts,err_skey)';
+    V_INSERT_NULL        VARCHAR2(4000);
+    V_CURR_STEP          VARCHAR2(4000) := '';
+  
+    CURSOR C_REQ_COLUMNS IS --Cursor to get the required fields from the data dictionary.
+      SELECT DISTINCT UCC.COLUMN_NAME
+        FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+       WHERE UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME
+         AND UC.TABLE_NAME = UPPER(P_TABLE)
+         AND (UC.CONSTRAINT_TYPE = 'C' OR UC.CONSTRAINT_TYPE = 'P');
+  
+    CURSOR C_REC IS --Cursor to get the column list as per the position of the given table.
+      SELECT COLUMN_NAME
+        FROM USER_TAB_COLS
+       WHERE TABLE_NAME = UPPER(P_TABLE)
+       ORDER BY COLUMN_ID;
+  
+    --END of NULL VALIDATION DECLARTION----------------------------------------------------------------------------------------------
+  
+    --Strat of PK declaration
+    V_CONDITION        VARCHAR2(3000) := ' ';
+    V_GROUPBY_COLUMN   VARCHAR2(3000);
+    V_MAIN_QUERY       VARCHAR2(4000) := ' ';
+    V_DELETE_COLUMN    VARCHAR2(4000);
+    V_SUB_QRY_PK       VARCHAR2(4000) := ' ';
+    V_DELETE_STRING_PK VARCHAR2(2000) := ' ';
+    V_ERR_DESC_PK      VARCHAR2(2000);
+    V_INSERT_COLUMN_PK VARCHAR2(4000);
+    V_FIXED_COLUMN_PK  VARCHAR2(200) := 'err_cd,err_desc,Load_mth,reprocess_flg,err_ts,err_skey)';
+    V_INSERT_PK        VARCHAR2(4000);
+    --Cursor to get the Column names for the table(parameter)
+    CURSOR TEMP_PK IS
+      SELECT U.COLUMN_NAME
+        FROM USER_TAB_COLS U
+       WHERE TABLE_NAME = UPPER(P_TABLE)
+       ORDER BY U.COLUMN_ID;
+    --Cursor to get the record list for which PK validation failed           
+    CURSOR C1_PK_REJ IS
+      SELECT U1.COLUMN_NAME
+        FROM USER_CONS_COLUMNS U1
+       WHERE U1.CONSTRAINT_NAME IN
+             (SELECT UCC.CONSTRAINT_NAME
+                FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+               WHERE (UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME)
+                 AND UC.TABLE_NAME = UPPER(P_TABLE)
+                 AND UC.CONSTRAINT_TYPE = 'P');
+    --End of PK declaration
+    --------------------------------------------------------------------------------------------------------------------------------
+  
+    --strat of FK validation declaration
+    V_CHILD_COLUMN     VARCHAR2(400) := ' ';
+    V_PARENT_COULUMN   VARCHAR2(400) := ' ';
+    V_TABLE            VARCHAR2(2000) := ' ';
+    V_DELETE_STRING_FK VARCHAR2(2300) := ' ';
+    V_SUB_QRY_FK       VARCHAR2(4000) := ' ';
+    V_MAIN_QUERY_FK    VARCHAR2(4000) := ' ';
+    V_AND_CONDITION    VARCHAR2(4000);
+    V_INSERT_COLUMN_FK VARCHAR2(4000);
+    V_FIXED_COLUMN_FK  VARCHAR2(200) := 'err_cd,err_desc,Load_mth,reprocess_flg,err_ts,err_skey)';
+    V_INSERT_FK        VARCHAR2(4000);
+    --Cursor to get the column names of the table (parameter)
+    CURSOR TEMP1 IS
+      SELECT U.COLUMN_NAME
+        FROM USER_TAB_COLS U
+       WHERE TABLE_NAME = UPPER(P_TABLE)
+       ORDER BY U.COLUMN_ID;
+    --Cursor to get the referenced child table and the column names   
+    CURSOR C2(V_CONSTRAINT_NAME VARCHAR2) IS
+      SELECT DISTINCT CHILD1.CONSTRAINT_NAME,
+                      CHILD1.TABLE_NAME CHILD_TABLE,
+                      COL.COLUMN_NAME COL_NAME, --child column name
+                      PARENT1.TABLE_NAME, --child table name
+                      PARCOL.COLUMN_NAME --parent column name
+        FROM USER_CONSTRAINTS  CHILD1, --parent table name
+             USER_CONSTRAINTS  PARENT1,
+             USER_CONS_COLUMNS COL,
+             USER_CONS_COLUMNS PARCOL
+       WHERE CHILD1.R_CONSTRAINT_NAME = PARENT1.CONSTRAINT_NAME
+         AND CHILD1.R_OWNER = PARENT1.OWNER
+         AND CHILD1.TABLE_NAME = UPPER(P_TABLE)
+         AND CHILD1.TABLE_NAME = COL.TABLE_NAME
+         AND CHILD1.CONSTRAINT_NAME = COL.CONSTRAINT_NAME
+         AND PARENT1.TABLE_NAME = PARCOL.TABLE_NAME
+         AND COL.POSITION = PARCOL.POSITION
+         AND PARENT1.CONSTRAINT_NAME = PARCOL.CONSTRAINT_NAME
+         AND CHILD1.CONSTRAINT_NAME = V_CONSTRAINT_NAME
+       ORDER BY 1;
+  
+    CURSOR C3 IS --to get the constraint name
+      SELECT UC.CONSTRAINT_NAME
+        FROM USER_CONSTRAINTS UC
+       WHERE UC.TABLE_NAME = UPPER(P_TABLE)
+         AND UC.CONSTRAINT_TYPE = 'R';
+    --End of FK validation declaration
+    ---------------------------------------------------------------------------------------------------------------------------------
+  BEGIN
+    BEGIN
+      V_CURR_STEP := 'OPENING CURSOR :
+                SELECT DISTINCT  UCC.COLUMN_NAME
+                FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+                WHERE UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME
+                AND UC.TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                AND (UC.CONSTRAINT_TYPE = ''C''
+                OR  UC.CONSTRAINT_TYPE = ''P'')';
+      --Start of Null
+      FOR REC IN C_REQ_COLUMNS LOOP
+        V_CURR_STEP          := '';
+        V_WHR_CONDITION      := REC.COLUMN_NAME || ' IS NULL OR ' ||
+                                V_WHR_CONDITION;
+        V_COL_VIOLATING_NULL := 'DECODE(TRIM(' || REC.COLUMN_NAME ||
+                                '), NULL,' || '''' || REC.COLUMN_NAME || '' ||
+                                '~'',''''' || ')||' || V_COL_VIOLATING_NULL;
+      END LOOP;
+    
+      V_WHR_CONDITION      := RTRIM(V_WHR_CONDITION, 'OR ');
+      V_COL_VIOLATING_NULL := RTRIM(V_COL_VIOLATING_NULL, '||');
+      V_COL_VIOLATING_NULL := (V_COL_VIOLATING_NULL || '||' ||
+                              '''Column/(s) Violating Null  Constraint''' ||
+                              ' AS ERR_MSG');
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                              SELECT COLUMN_NAME
+                              FROM USER_TAB_COLS
+                              WHERE TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                              ORDER BY column_id';
+      FOR REC IN C_REC LOOP
+        V_CURR_STEP          := '';
+        V_LIST_NULL          := V_LIST_NULL || '||' || '''' ||
+                                REC.COLUMN_NAME || '' || ':''' || '||' || 'a.' ||
+                                REC.COLUMN_NAME || '||''|''';
+        V_INSERT_COLUMN_NULL := V_INSERT_COLUMN_NULL || ',' ||
+                                REC.COLUMN_NAME;
+      END LOOP;
+    
+      V_INSERT_COLUMN_NULL := LTRIM(V_INSERT_COLUMN_NULL, ',');
+      --    V_LIST_NULL          := LTRIM(V_LIST_NULL, '||');
+      --  V_LIST_NULL          := RTRIM(V_LIST_NULL, '||''|''');
+      V_MAIN_NULL := ' SELECT a.*, ' || '''' || P_SUBSYS_NAME || '_2''' ||
+                     ',  ' || /*'''' ||*/
+                     V_COL_VIOLATING_NULL || /*'''' ||*/
+                     ',  ' || '''' || TO_CHAR(SYSDATE, 'yyyymm') || '''' ||
+                     '  ,' || '''N''' || ' ,' || ' current_timestamp' || ' ,' ||
+                     'error_seq.nextval' || ' from ' || P_TABLE || ' a' ||
+                     ' where ' || V_WHR_CONDITION;
+      IF V_WHR_CONDITION IS NOT NULL THEN
+      
+        --dbms_output.put_line(v_main_null);
+        V_INSERT_NULL := 'Insert into ' || P_REJ_TABLE || '( ' ||
+                         V_INSERT_COLUMN_NULL || ',' || V_FIXED_COLUMN_NULL ||
+                         V_MAIN_NULL;
+        --dbms_output.put_line('V_INSERT_NULL   ' || V_INSERT_NULL);
+      
+        --dbms_output.put_line(V_INSERT_NULL);
+        V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_INSERT_NULL;
+        EXECUTE IMMEDIATE V_INSERT_NULL;
+      END IF;
+      COMMIT;
+      /*                EXCEPTION
+      WHEN OTHERS THEN
+      dbms_output.put_line(SQLERRM || '---Null validation error');*/
+    END; ---end of null
+    ----------------------------------------------------------------------------------------------------------------------------------
+    BEGIN
+      V_CURR_STEP := '';
+      ---start of PK
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                        SELECT U1.COLUMN_NAME
+                        FROM USER_CONS_COLUMNS U1
+                        WHERE U1.CONSTRAINT_NAME IN
+                        (SELECT UCC.CONSTRAINT_NAME
+                        FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+                        WHERE (UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME)
+                        AND UC.TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                        AND UC.CONSTRAINT_TYPE = ''P'')';
+      FOR I IN C1_PK_REJ LOOP
+        V_CURR_STEP := '';
+        V_CONDITION := V_CONDITION || ' AND a.' || I.COLUMN_NAME || '= b.' ||
+                       I.COLUMN_NAME;
+      END LOOP;
+    
+      V_CONDITION := LTRIM(V_CONDITION, ' AND ');
+      -- DBMS_OUTPUT.PUT_LINE(V_CONDITION);
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                                SELECT U1.COLUMN_NAME
+                                FROM USER_CONS_COLUMNS U1
+                                WHERE U1.CONSTRAINT_NAME IN
+                                (SELECT UCC.CONSTRAINT_NAME
+                                FROM USER_CONSTRAINTS UC, USER_CONS_COLUMNS UCC
+                                WHERE (UC.CONSTRAINT_NAME = UCC.CONSTRAINT_NAME)
+                                AND UC.TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                                AND UC.CONSTRAINT_TYPE = ''P'')';
+      FOR REC IN C1_PK_REJ LOOP
+        V_CURR_STEP      := '';
+        V_GROUPBY_COLUMN := V_GROUPBY_COLUMN || ',' || REC.COLUMN_NAME;
+        V_DELETE_COLUMN  := V_DELETE_COLUMN || ',' || 'a.' ||
+                            REC.COLUMN_NAME;
+        V_ERR_DESC_PK    := V_ERR_DESC_PK || '~' || REC.COLUMN_NAME;
+      END LOOP;
+    
+      V_ERR_DESC_PK := LTRIM(V_ERR_DESC_PK, '~');
+      V_ERR_DESC_PK := V_ERR_DESC_PK ||
+                       '~Column/(s) Violating Primary Key Constraint';
+      --dbms_output.put_line(V_ERR_DESC_PK);
+      V_GROUPBY_COLUMN := LTRIM(V_GROUPBY_COLUMN, ',');
+      -- DBMS_OUTPUT.PUT_LINE(V_GROUPBY_COLUMN);
+      V_DELETE_COLUMN := LTRIM(V_DELETE_COLUMN, ',');
+      -- DBMS_OUTPUT.PUT_LINE('-----------------'||V_STR_Dlt);
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                                SELECT u.COLUMN_NAME
+                                FROM USER_TAB_COLS u
+                                WHERE TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                                ORDER BY u.column_id';
+      FOR REC IN TEMP_PK LOOP
+        V_CURR_STEP        := '';
+        V_INSERT_COLUMN_PK := V_INSERT_COLUMN_PK || ',' || REC.COLUMN_NAME;
+      END LOOP;
+    
+      V_INSERT_COLUMN_PK := LTRIM(V_INSERT_COLUMN_PK, ',');
+      --dbms_output.put_line('V_ins_col              ' || V_INSERT_COLUMN_PK);
+    
+      V_MAIN_QUERY := ' SELECT a.*, ' || '''' || P_SUBSYS_NAME || '_0''' ||
+                      ',  ' || '''' || V_ERR_DESC_PK || '''' || ',  ' || '''' ||
+                      TO_CHAR(SYSDATE, 'yyyyMm') || '''' || '  ,' ||
+                      '''N''' || ' ,' || ' current_timestamp' || ' ,' ||
+                      'error_seq.nextval' || '  FROM ' || P_TABLE ||
+                      '  a  ' || '  LEFT OUTER JOIN (SELECT ' ||
+                      V_GROUPBY_COLUMN || ' , COUNT(1) CNT
+                FROM  ' || P_TABLE || '  b  ' ||
+                      ' GROUP BY ' || V_GROUPBY_COLUMN || ' )  b ON (' ||
+                      V_CONDITION || ' )  WHERE b.CNT > 1';
+    
+      IF V_CONDITION IS NOT NULL THEN
+        V_INSERT_PK := 'Insert into ' || P_REJ_TABLE || '( ' ||
+                       V_INSERT_COLUMN_PK || ',' || V_FIXED_COLUMN_PK ||
+                       V_MAIN_QUERY;
+      
+        -- DBMS_OUTPUT.PUT_LINE('v_ins_str                 ' || V_INSERT_PK);
+        V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_INSERT_PK;
+        EXECUTE IMMEDIATE V_INSERT_PK;
+      END IF;
+      COMMIT;
+      V_CURR_STEP  := V_SUB_QRY_PK;
+      V_SUB_QRY_PK := ' (SELECT ' || V_DELETE_COLUMN || '  FROM ' ||
+                      P_TABLE || '  a  ' || '  LEFT OUTER JOIN (SELECT ' ||
+                      V_GROUPBY_COLUMN || ' , COUNT(1) CNT
+                FROM  ' || P_TABLE || '  b  ' ||
+                      ' GROUP BY ' || V_GROUPBY_COLUMN || ' )  b ON (' ||
+                      V_CONDITION || ' )  WHERE b.CNT > 1)';
+    
+      /*                EXCEPTION
+      WHEN OTHERS THEN
+      dbms_output.put_line(SQLERRM);
+          */
+    END; ---end of PK
+    ---------------------------------------------------------------------------------------------------
+  
+    BEGIN
+      --STRAT OF FK
+      V_CURR_STEP := '';
+      --Get the insert record and delete column list 
+      V_CURR_STEP := 'OPENING CURSOR :
+                              SELECT u.COLUMN_NAME
+                              FROM USER_TAB_COLS u
+                              WHERE TABLE_NAME = UPPER( ''' ||
+                     P_TABLE || ''')
+                              ORDER BY u.column_id';
+      FOR REC IN TEMP1 LOOP
+        V_CURR_STEP        := '';
+        V_INSERT_COLUMN_FK := V_INSERT_COLUMN_FK || ',' || REC.COLUMN_NAME;
+      END LOOP;
+    
+      V_CURR_STEP        := '';
+      V_INSERT_COLUMN_FK := LTRIM(V_INSERT_COLUMN_FK, ',');
+      DBMS_OUTPUT.PUT_LINE('V_ins_col              ' || V_INSERT_COLUMN_FK);
+    
+      V_CURR_STEP := 'OPENING CURSOR :
+                        SELECT uc.constraint_name
+                        FROM User_Constraints uc
+                        WHERE uc.table_name = UPPER( ''' ||
+                     P_TABLE || ''')
+                        AND uc.constraint_type = ''R''';
+      FOR REC IN C3 LOOP
+      
+        V_CURR_STEP := 'OPENING CURSOR :
+                                  SELECT DISTINCT CHILD1.CONSTRAINT_NAME,
+                                  CHILD1.TABLE_NAME CHILD_TABLE,
+                                  COL.COLUMN_NAME COL_NAME, --child column name
+                                  PARENT1.TABLE_NAME, --child table name
+                                  PARCOL.COLUMN_NAME --parent column name
+                                  FROM USER_CONSTRAINTS  CHILD1, --parent table name
+                                  USER_CONSTRAINTS  PARENT1,
+                                  USER_CONS_COLUMNS COL,
+                                  USER_CONS_COLUMNS PARCOL
+                                  WHERE CHILD1.R_CONSTRAINT_NAME = PARENT1.CONSTRAINT_NAME
+                                  AND CHILD1.R_OWNER = PARENT1.OWNER
+                                  AND CHILD1.TABLE_NAME = upper( ''' ||
+                       P_TABLE || ''')
+                                  AND CHILD1.TABLE_NAME = COL.TABLE_NAME
+                                  AND CHILD1.CONSTRAINT_NAME = COL.CONSTRAINT_NAME
+                                  AND PARENT1.TABLE_NAME = PARCOL.TABLE_NAME
+                                  AND COL.POSITION = PARCOL.POSITION
+                                  AND PARENT1.CONSTRAINT_NAME = PARCOL.CONSTRAINT_NAME
+                                  AND child1.constraint_name = v_constraint_name
+                                  ORDER BY 1';
+        FOR REC1 IN C2(REC.CONSTRAINT_NAME) LOOP
+          --For child table and referenced column
+          V_CURR_STEP      := '';
+          V_TABLE          := REC1.TABLE_NAME;
+          V_PARENT_COULUMN := V_PARENT_COULUMN || ',' || REC1.COLUMN_NAME;
+          V_AND_CONDITION  := V_AND_CONDITION || REC1.COL_NAME ||
+                              ' IS NOT NULL AND  ';
+          V_CHILD_COLUMN   := V_CHILD_COLUMN || ',' || REC1.COL_NAME;
+        END LOOP;
+      
+        V_PARENT_COULUMN := LTRIM(V_PARENT_COULUMN, ' ,');
+        V_CHILD_COLUMN   := LTRIM(V_CHILD_COLUMN, ' ,');
+        V_AND_CONDITION  := RTRIM(V_AND_CONDITION, '  AND ');
+        -- dbms_output.put_line('-----------------------' || V_AND_CONDITION);
+      
+        V_MAIN_QUERY_FK := ' SELECT Tpx.*, ' || '''' || P_SUBSYS_NAME ||
+                           '_1''' || ',  ' || '''' ||
+                           REPLACE(V_CHILD_COLUMN, ',', '~') ||
+                           '~Column/(s) Violating Foreign Key Constraint ' || '''' ||
+                           ',  ' || '''' || TO_CHAR(SYSDATE, 'yyyymm') || '''' ||
+                           '  ,' || '''N''' || ' ,' || ' current_timestamp' || ' ,' ||
+                           'error_seq.nextval' || '  FROM ' || P_TABLE ||
+                           ' Tpx' || '  WHERE (  ' || V_CHILD_COLUMN ||
+                           '  ) not in ( select ' || V_PARENT_COULUMN || '
+                from ' || V_TABLE || ' Tpc )' ||
+                           ' AND  ' || V_AND_CONDITION;
+      
+        V_INSERT_FK := 'Insert into ' || P_REJ_TABLE || '( ' ||
+                       V_INSERT_COLUMN_FK || ',' || V_FIXED_COLUMN_FK ||
+                       V_MAIN_QUERY_FK;
+      
+        --  DBMS_OUTPUT.PUT_LINE('v_ins_str                 ' || V_INSERT_FK);
+        V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_INSERT_FK;
+        EXECUTE IMMEDIATE V_INSERT_FK;
+        COMMIT;
+        V_CHILD_COLUMN   := '';
+        V_PARENT_COULUMN := '';
+        V_AND_CONDITION  := '';
+      END LOOP;
+      COMMIT;
+    
+      /*                    EXCEPTION
+      WHEN OTHERS THEN
+      dbms_output.put_line(SQLERRM || '---FK validation error');*/
+    END; ---end of FK
+  
+    BEGIN
+      V_CURR_STEP := '';
+      BEGIN
+        --delete for pk
+        IF V_DELETE_COLUMN IS NOT NULL THEN
+          V_DELETE_STRING_PK := ' DELETE FROM ' || P_TABLE ||
+                                '  a  WHERE ( ' || V_GROUPBY_COLUMN ||
+                                ' ) IN ' || V_SUB_QRY_PK;
+          DBMS_OUTPUT.PUT_LINE(V_DELETE_STRING_PK);
+          V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_DELETE_STRING_PK;
+          EXECUTE IMMEDIATE V_DELETE_STRING_PK;
+        END IF;
+        COMMIT;
+        /*                        EXCEPTION
+        WHEN OTHERS THEN
+        DBMS_OUTPUT.put_line('Error in deleting record for PK   ' ||
+        SQLERRM);*/
+      END;
+    
+      BEGIN
+        --delete for Null 
+        IF V_WHR_CONDITION IS NOT NULL THEN
+          V_DELETE_STRING_NULL := 'delete from ' || P_TABLE || ' where ' ||
+                                  V_WHR_CONDITION;
+          V_CURR_STEP          := 'EXECUTE IMMEDIATE ' ||
+                                  V_DELETE_STRING_NULL;
+          EXECUTE IMMEDIATE V_DELETE_STRING_NULL;
+          COMMIT;
+        END IF;
+        /*                        EXCEPTION
+        WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Problem in delete for null validation   ' ||
+        SQLERRM);*/
+      END;
+    
+      BEGIN
+        --delete for FK
+        V_CURR_STEP := 'OPENING CURSOR :
+                                SELECT uc.constraint_name
+                                FROM User_Constraints uc
+                                WHERE uc.table_name = UPPER( ''' ||
+                       P_TABLE || ''')
+                                AND uc.constraint_type = ''R''';
+        FOR REC IN C3 LOOP
+        
+          V_CURR_STEP := 'OPENING CURSOR : 
+                                  SELECT DISTINCT CHILD1.CONSTRAINT_NAME,
+                                  CHILD1.TABLE_NAME CHILD_TABLE,
+                                  COL.COLUMN_NAME COL_NAME, --child column name
+                                  PARENT1.TABLE_NAME, --child table name
+                                  PARCOL.COLUMN_NAME --parent column name
+                                  FROM USER_CONSTRAINTS  CHILD1, --parent table name
+                                  USER_CONSTRAINTS  PARENT1,
+                                  USER_CONS_COLUMNS COL,
+                                  USER_CONS_COLUMNS PARCOL
+                                  WHERE CHILD1.R_CONSTRAINT_NAME = PARENT1.CONSTRAINT_NAME
+                                  AND CHILD1.R_OWNER = PARENT1.OWNER
+                                  AND CHILD1.TABLE_NAME = upper( ''' ||
+                         P_TABLE || ''')
+                                  AND CHILD1.TABLE_NAME = COL.TABLE_NAME
+                                  AND CHILD1.CONSTRAINT_NAME = COL.CONSTRAINT_NAME
+                                  AND PARENT1.TABLE_NAME = PARCOL.TABLE_NAME
+                                  AND COL.POSITION = PARCOL.POSITION
+                                  AND PARENT1.CONSTRAINT_NAME = PARCOL.CONSTRAINT_NAME
+                                  AND child1.constraint_name = ''' ||
+                         REC.CONSTRAINT_NAME || '''
+                                  ORDER BY 1';
+          FOR REC1 IN C2(REC.CONSTRAINT_NAME) LOOP
+            --For child table and referenced column
+            V_CURR_STEP      := '';
+            V_TABLE          := REC1.TABLE_NAME;
+            V_PARENT_COULUMN := V_PARENT_COULUMN || ',' || REC1.COLUMN_NAME;
+            V_AND_CONDITION  := V_AND_CONDITION || REC1.COL_NAME ||
+                                ' IS NOT NULL AND  ';
+            V_CHILD_COLUMN   := V_CHILD_COLUMN || ',' || REC1.COL_NAME;
+          END LOOP;
+        
+          V_PARENT_COULUMN := LTRIM(V_PARENT_COULUMN, ' ,');
+          V_CHILD_COLUMN   := LTRIM(V_CHILD_COLUMN, ' ,');
+          V_AND_CONDITION  := RTRIM(V_AND_CONDITION, '  AND ');
+          --dbms_output.put_line('-----------------------' || V_AND_CONDITION);
+        
+          V_SUB_QRY_FK := 'SELECT ' || V_CHILD_COLUMN || '  FROM ' ||
+                          P_TABLE || ' Tpx' || '  WHERE ( ' ||
+                          V_CHILD_COLUMN || '  ) not in ( select ' ||
+                          V_PARENT_COULUMN || '
+                        from ' || V_TABLE ||
+                          ' Tpc )' || ' AND  ' || V_AND_CONDITION;
+        
+          V_DELETE_STRING_FK := ' DELETE FROM ' || P_TABLE ||
+                                '  tpx  WHERE ( ' || V_CHILD_COLUMN ||
+                                ' ) IN ' || '( ' || V_SUB_QRY_FK || ' )';
+          --DBMS_OUTPUT.PUT_LINE(V_DELETE_STRING_FK);
+          V_CURR_STEP := 'EXECUTE IMMEDIATE ' || V_DELETE_STRING_FK;
+          EXECUTE IMMEDIATE V_DELETE_STRING_FK;
+        
+          V_CHILD_COLUMN   := '';
+          V_PARENT_COULUMN := '';
+          V_AND_CONDITION  := '';
+          V_CURR_STEP      := '';
+        END LOOP;
+        COMMIT;
+        /*                        EXCEPTION
+        WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Problem in delete for FK validation   ' ||
+        SQLERRM);*/
+      END;
+    
+    END;
+  
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_REJ_EXCPTN_HANDLING : ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR(-20001, SQLERRM);
+    
+  END SP_REJ_EXCPTN_HANDLING;
+  ----------------------------------------SP_BUILD_CONTROL_FILE------------------------------------------------
+  PROCEDURE SP_BUILD_CONTROL_FILE(P_DIR_NAME      VARCHAR2,
+                                  P_TBL_NAME      VARCHAR2,
+                                  P_CTL_FILE_NAME VARCHAR2,
+                                  P_DELIM         VARCHAR2,
+                                  P_LOAD_MODE     VARCHAR2,
+                                  P_PARTN         VARCHAR2,
+                                  P_DATE_FMT      VARCHAR2) AS
+  
+    /*
+    -----------------------------------------------------------------------------------------
+    created by : LOGESH
+    created on : Apr-28-2008
+    description :   This procedure is used to generate SQL Loader control file for the tables
+    ------------------------------------------------------------------------------------------
+    */
+    FILEHANDLER     UTL_FILE.FILE_TYPE;
+    V_TABLENAME     VARCHAR2(30);
+    V_COLUMNNAME    VARCHAR2(30);
+    V_PARTITIONNAME VARCHAR2(30);
+    V_COL_CNT       NUMBER;
+    I               NUMBER;
+    V_DATATYPE      VARCHAR2(30);
+    V_LINE          VARCHAR2(100) := '';
+    V_CURR_STEP     VARCHAR2(1000) := '';
+  
+    CURSOR C_COLS IS
+      SELECT COLUMN_NAME, DATA_TYPE
+        FROM USER_TAB_COLUMNS
+       WHERE TABLE_NAME = P_TBL_NAME
+       ORDER BY COLUMN_ID; -- Added order by clause on 11/21/08 to Fix Wolter's Kluwer issue
+  
+  BEGIN
+  
+    I := 0;
+  
+    V_CURR_STEP := 'SELECT COUNT(COLUMN_NAME)
+    INTO V_COL_CNT
+    FROM USER_TAB_COLUMNS
+   WHERE TABLE_NAME = ''' || P_TBL_NAME || '''
+   ORDER BY COLUMN_ID ASC';
+    SELECT COUNT(COLUMN_NAME)
+      INTO V_COL_CNT
+      FROM USER_TAB_COLUMNS
+     WHERE TABLE_NAME = P_TBL_NAME
+     ORDER BY COLUMN_ID ASC;
+  
+    V_CURR_STEP := 'SELECT TABLE_NAME  
+    INTO ''' || V_TABLENAME || '''
+    FROM USER_TABLES
+   WHERE TABLE_NAME = ''' || P_TBL_NAME || '''';
+    SELECT TABLE_NAME
+      INTO V_TABLENAME
+      FROM USER_TABLES
+     WHERE TABLE_NAME = P_TBL_NAME;
+  
+    IF P_PARTN IS NOT NULL THEN
+      V_CURR_STEP := 'SELECT PARTITION_NAME
+      INTO ''' || V_PARTITIONNAME || '''
+      FROM USER_TAB_PARTITIONS
+     WHERE PARTITION_NAME = ''' || P_PARTN || '''
+       AND TABLE_NAME = ''' || P_TBL_NAME || ''';
+  END IF';
+      SELECT PARTITION_NAME
+        INTO V_PARTITIONNAME
+        FROM USER_TAB_PARTITIONS
+       WHERE PARTITION_NAME = P_PARTN
+         AND TABLE_NAME = P_TBL_NAME;
+    END IF;
+  
+    V_CURR_STEP := '';
+    FILEHANDLER := UTL_FILE.FOPEN(P_DIR_NAME, P_CTL_FILE_NAME, 'W');
+  
+    UTL_FILE.PUT_LINE(FILEHANDLER, 'LOAD DATA');
+  
+    UTL_FILE.PUT_LINE(FILEHANDLER, P_LOAD_MODE);
+  
+    IF P_PARTN IS NOT NULL THEN
+      UTL_FILE.PUT_LINE(FILEHANDLER,
+                        'INTO TABLE ' || P_TBL_NAME || ' PARTITION(' ||
+                        P_PARTN || ')');
+    ELSE
+      UTL_FILE.PUT_LINE(FILEHANDLER, 'INTO TABLE ' || P_TBL_NAME);
+    END IF;
+  
+    V_CURR_STEP := '';
+    UTL_FILE.PUT_LINE(FILEHANDLER,
+                      'FIELDS TERMINATED BY ''' || P_DELIM || '''');
+    --  UTL_FILE.PUT_LINE(fileHandler, ''''||P_DELIM||'''');
+  
+    UTL_FILE.PUT_LINE(FILEHANDLER, 'TRAILING NULLCOLS(');
+  
+    V_CURR_STEP := 'OPENING CURSOR : 
+     SELECT COLUMN_NAME, DATA_TYPE
+      FROM USER_TAB_COLUMNS
+     WHERE TABLE_NAME = ''' || P_TBL_NAME || '''';
+    OPEN C_COLS;
+    LOOP
+      V_CURR_STEP := '    FETCH C_COLS
+      INTO V_COLUMNNAME, V_DATATYPE';
+      FETCH C_COLS
+        INTO V_COLUMNNAME, V_DATATYPE;
+      I := I + 1;
+      EXIT WHEN C_COLS%NOTFOUND;
+    
+      V_CURR_STEP := '';
+      IF V_DATATYPE = 'DATE' THEN
+        V_LINE := V_COLUMNNAME || ' ' || V_DATATYPE || ' "' || P_DATE_FMT || '"';
+      ELSE
+        V_LINE := V_COLUMNNAME;
+      END IF;
+    
+      IF V_COL_CNT > I THEN
+        UTL_FILE.PUT_LINE(FILEHANDLER, V_LINE || ',');
+        DBMS_OUTPUT.put_line(V_CURR_STEP);
+      ELSE
+        UTL_FILE.PUT_LINE(FILEHANDLER, V_LINE || ')');
+      END IF;
+    
+    END LOOP;
+    CLOSE C_COLS;
+    -- V_CURR_STEP:='UTL_FILE.FCLOSE( ''' || FILEHANDLER || ''')';
+    UTL_FILE.FCLOSE(FILEHANDLER);
+  
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_BUILD_CONTROL_FILE : ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR(-20001, SQLERRM);
+    
+  END;
+  --------------------------------------SP_WRITE_DATA---------------------------------------------------
+  PROCEDURE SP_WRITE_DATA(P_TABLE     IN VARCHAR2, -- Table name
+                          P_COLUMN    IN VARCHAR2 DEFAULT NULL,
+                          P_FILE      IN VARCHAR2, -- Output file name
+                          P_DIRECTORY IN VARCHAR2, -- Output Directory name
+                          P_DELIMITER IN VARCHAR2 DEFAULT ',', -- delimiter character
+                          P_DATEFMT   IN VARCHAR2 DEFAULT 'DD/MM/YYYY', -- Date format
+                          P_WHERE     IN VARCHAR2 DEFAULT NULL, -- Where clause
+                          P_ORDER     IN VARCHAR2 DEFAULT NULL -- Order by
+                          ) IS
+    v_file_type     UTL_FILE.file_type;
+    v_column_header VARCHAR2(32767);
+    lii             INTEGER;
+    v_datefmt       VARCHAR2(40) := '''' || p_datefmt || '''';
+    TYPE typ_ref_cur IS REF CURSOR;
+  
+    v_ref_cur typ_ref_cur;
+  
+    -- Columns --
+    CURSOR c_coltab(pctab IN VARCHAR2) IS
+      SELECT column_name, data_type
+        FROM all_tab_columns
+       WHERE table_name = UPPER(pctab);
+  
+    v_separator   VARCHAR2(2) := p_delimiter;
+    v_main_select VARCHAR2(10000);
+    v_select_cls  VARCHAR2(10000) := 'SELECT ';
+    v_column_list VARCHAR2(1000);
+    v_curr_step   VARCHAR2(6000) := '';
+  
+    -----------------------------
+    --  Open the output file   --
+    -----------------------------
+    FUNCTION open_file(p_dir IN VARCHAR2, pcname_file IN VARCHAR2)
+      RETURN UTL_FILE.file_type IS
+      FILE      UTL_FILE.file_type;
+      v_err_msg VARCHAR2(256);
+    BEGIN
+      FILE := UTL_FILE.fopen(p_dir, pcname_file, 'W', 32764);
+    
+      IF NOT UTL_FILE.is_open(FILE) THEN
+        v_err_msg := 'Error encountered while opening file (' || p_dir || ') ' ||
+                     pcname_file;
+        raise_application_error(-20100, v_err_msg);
+      END IF;
+    
+      RETURN(FILE);
+    EXCEPTION
+      WHEN OTHERS THEN
+        v_err_msg := 'Error : ' || TO_CHAR(SQLCODE) ||
+                     ' while opening file (' || p_dir || ') ' ||
+                     pcname_file;
+        raise_application_error(-20070, v_err_msg);
+      
+    END open_file;
+  BEGIN
+    v_curr_step := '';
+    -- Open file  --
+    v_file_type := open_file(p_directory, p_file);
+  
+    -- Output column header --
+    IF p_column IS NULL THEN
+      lii         := 1;
+      v_curr_step := 'OPENING CURSOR :
+    SELECT COLUMN_NAME, DATA_TYPE
+      FROM ALL_TAB_COLUMNS
+     WHERE TABLE_NAME = UPPER(PCTAB)';
+    
+      FOR cols IN c_coltab(p_table) LOOP
+        v_curr_step := '';
+      
+        IF lii = 1 THEN
+          v_column_header := v_column_header || cols.column_name;
+        ELSE
+          v_column_header := v_column_header || v_separator ||
+                             cols.column_name;
+        END IF;
+      
+        lii := lii + 1;
+      END LOOP;
+    
+      -- Output column header --
+      UTL_FILE.put_line(v_file_type, v_column_header, TRUE);
+    ELSE
+      v_column_header := p_column;
+      UTL_FILE.put_line(v_file_type, v_column_header, TRUE);
+    END IF;
+    -- Building of the query --
+    IF p_column IS NULL THEN
+      lii         := 1;
+      v_curr_step := 'SELECT COLUMN_NAME, DATA_TYPE
+      FROM ALL_TAB_COLUMNS
+     WHERE TABLE_NAME = UPPER(PCTAB)';
+      FOR cols IN c_coltab(p_table) LOOP
+        v_curr_step := '';
+        IF lii > 1 THEN
+          v_select_cls := v_select_cls || '||';
+        END IF;
+        IF cols.data_type IN ('NUMBER', 'FLOAT') THEN
+          v_column_list := 'Decode(' || cols.column_name ||
+                           ',NULL, ''NULL'',To_char("' || cols.column_name ||
+                           '"))';
+        ELSE
+          v_column_list := '"' || cols.column_name || '"';
+        END IF;
+        IF lii = 1 THEN
+          v_select_cls := v_select_cls || v_column_list;
+        ELSE
+          v_select_cls := v_select_cls || '''' || v_separator || '''' || '||' ||
+                          v_column_list;
+        END IF;
+        lii := lii + 1;
+      END LOOP;
+      v_curr_step   := '';
+      v_main_select := v_select_cls || ' FROM ' || p_table;
+    ELSE
+      ---add here
+      v_column_list := p_column;
+      v_select_cls  := v_select_cls || v_column_list;
+      v_main_select := v_select_cls || ' FROM ' || p_table;
+    END IF;
+  
+    IF p_where IS NOT NULL THEN
+      -- add the WHERE clause --
+      v_main_select := v_main_select || ' WHERE ' || p_where;
+    END IF;
+    IF p_order IS NOT NULL THEN
+      -- add the ORDER BY clause --
+      v_main_select := v_main_select || ' ORDER BY ' || p_order;
+    END IF;
+    -- Extrac the raws --
+    v_curr_step := 'OPENING CURSOR : ' || v_main_select;
+    OPEN v_ref_cur FOR v_main_select;
+    LOOP
+      v_curr_step := 'FETCH V_REF_CUR
+      INTO V_COLUMN_HEADER';
+      FETCH v_ref_cur
+        INTO v_column_header;
+      EXIT WHEN v_ref_cur%NOTFOUND;
+      -- Write to the output file --
+      UTL_FILE.put_line(v_file_type, v_column_header, TRUE);
+    END LOOP;
+  
+    CLOSE v_ref_cur;
+  
+    -- Close file --
+    UTL_FILE.fclose(v_file_type);
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF v_curr_step IS NOT NULL THEN
+        DBMS_OUTPUT.put_line('PKG_CDW_COMMON_UTIL.SP_WRITE_DATA : ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.put_line(v_curr_step);
+      END IF;
+    
+      raise_application_error(-20001, SQLERRM);
+    
+  END sp_write_data;
+
+  PROCEDURE SP_DISABLE_TABLE_INDX(P_TABLE_NAME VARCHAR2) IS
+    /*************************************************************************
+        Created on :03March 2009
+        Created by : Sourav Chandra
+        Purpose:  Disable all indexes for a given table apart from the function based indexes.
+    ***************************************************************************/
+    CURSOR C_IND_NAME IS --TO GET THE NAME OF INDEX
+      SELECT UI.INDEX_NAME
+        FROM USER_INDEXES UI
+       WHERE UI.TABLE_NAME = P_TABLE_NAME;
+    V_CURR_STEP VARCHAR2(32767) := '';
+    V_STR       VARCHAR2(32767);
+  BEGIN
+  
+    --DISABLE INDEXES ON THE STAGING TABLE
+    FOR I IN C_IND_NAME LOOP
+      V_STR       := 'ALTER INDEX ' || I.INDEX_NAME || ' UNUSABLE';
+      V_CURR_STEP := V_STR;
+      EXECUTE IMMEDIATE (V_STR);
+    END LOOP;
+  
+  EXCEPTION
+    WHEN OTHERS THEN
+    
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_DISABLE_TABLE_INDX : ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR(-20001, SQLERRM);
+  END SP_DISABLE_TABLE_INDX;
+
+  PROCEDURE SP_ENABLE_TABLE_INDX(P_TABLE_NAME VARCHAR2) IS
+    /*************************************************************************
+        Created on :03March 2009
+        Created by : Sourav Chandra
+        Purpose:  Enable all indexes for a given table apart from the function based indexes.
+    ***************************************************************************/
+    CURSOR C_IND_NAME IS --TO GET THE NAME OF INDEX
+      SELECT UI.INDEX_NAME
+        FROM USER_INDEXES UI
+       WHERE UI.TABLE_NAME = P_TABLE_NAME;
+    V_CURR_STEP VARCHAR2(32767) := '';
+    V_STR       VARCHAR2(32767);
+  BEGIN
+    --REBUILDING INDEXES ON THE STAGING TABLES
+    FOR I IN C_IND_NAME LOOP
+      V_STR       := 'ALTER INDEX ' || I.INDEX_NAME ||
+                     '  REBUILD NOLOGGING';
+      V_CURR_STEP := V_STR;
+      EXECUTE IMMEDIATE (V_STR);
+    
+      ---TEMPORARY FOR MONITORING PURPOSES
+      V_STR       := 'ALTER INDEX ' || I.INDEX_NAME || '  MONITORING USAGE';
+      V_CURR_STEP := V_STR;
+      EXECUTE IMMEDIATE (V_STR);
+      -------------------------------------------------------------
+    
+      V_STR       := 'ANALYZE INDEX ' || I.INDEX_NAME ||
+                     '  ESTIMATE STATISTICS sample 5 percent ';
+      V_CURR_STEP := V_STR;
+      EXECUTE IMMEDIATE (V_STR);
+    END LOOP;
+  EXCEPTION
+    WHEN OTHERS THEN
+    
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_ENABLE_TABLE_INDX : ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR(-20001, SQLERRM);
+  END SP_ENABLE_TABLE_INDX;
+  ------------------------------------------------------------------------------------------------------------
+
+  /*PROCEDURE SP_DROP_TABLE_INDX_STORE(P_TABLE IN VARCHAR2) AS
+     \*************************************************************************
+         Created on :10 April 2009
+         Created by : Sourav Chandra
+         Purpose:  Drop all indexes for a given table and store the index info in TB_CDW_INDX_STORE.
+     ***************************************************************************\
+     CURSOR C_IND IS
+       SELECT INDEX_NAME
+         FROM ALL_INDEXES U
+        WHERE U.TABLE_NAME = UPPER(P_TABLE)
+          AND U.INDEX_NAME NOT LIKE 'PK%';
+   
+     CURSOR C_INS IS
+       SELECT U.INDEX_NAME,
+              U.INDEX_TYPE,
+              U.TABLE_NAME,
+              U.TABLESPACE_NAME,
+              UN.COLUMN_NAME,
+              U.PARTITIONED
+       
+         FROM ALL_INDEXES U, ALL_IND_COLUMNS UN
+        WHERE U.INDEX_NAME = UN.INDEX_NAME
+          AND U.OWNER = U.OWNER
+          AND U.TABLE_NAME = UPPER(P_TABLE)
+          AND U.INDEX_NAME NOT LIKE 'PK%';
+   
+     V_STR       VARCHAR2(2000);
+     V_CURR_STEP VARCHAR2(4000);
+   BEGIN
+     FOR ins IN C_INS LOOP
+       V_CURR_STEP := 'INSERT INTO TB_CDW_STORE_INDX
+  VALUES(' || INS.INDEX_NAME || ',' || INS.INDEX_TYPE || ',' ||
+                      INS.TABLE_NAME || ',' || INS.TABLESPACE_NAME || ',' ||
+                      INS.COLUMN_NAME || ',' || INS.PARTITIONED || ' )';
+       INSERT INTO TB_CDW_STORE_INDX
+       VALUES
+         (INS.INDEX_NAME,
+          INS.INDEX_TYPE,
+          INS.TABLE_NAME,
+          INS.TABLESPACE_NAME,
+          INS.COLUMN_NAME,
+          INS.PARTITIONED);
+     
+       UPDATE TB_CDW_STORE_INDX T
+          SET T.TABLESPACE_NAME = (SELECT DISTINCT TABLESPACE_NAME
+                                     FROM USER_IND_PARTITIONS UP
+                                    WHERE UP.INDEX_NAME = INS.INDEX_NAME)
+        WHERE T.PARTITIONED = 'YES'
+          AND T.TABLESPACE_NAME IS NULL;
+     END LOOP;
+     COMMIT;
+   
+     V_CURR_STEP := '';
+     FOR I IN C_IND LOOP
+       V_STR       := 'DROP INDEX ' || I.INDEX_NAME;
+       V_CURR_STEP := V_STR;
+       EXECUTE IMMEDIATE V_STR;
+     END LOOP;
+   
+   EXCEPTION
+     WHEN OTHERS THEN
+       IF V_CURR_STEP IS NOT NULL THEN
+         DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_DROP_TABLE_INDX_STORE: ERROR WHILE EXECUTING COMMAND:');
+         DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+       END IF;
+       RAISE_APPLICATION_ERROR('-20001', SQLERRM);
+   END SP_DROP_TABLE_INDX_STORE;*/
+
+  PROCEDURE SP_DROP_TABLE_INDX_STORE(P_TABLE IN VARCHAR2) AS
+    /*************************************************************************
+        Created on :10 April 2009
+        Created by : Sourav Chandra
+        Purpose:  Drop all indexes for a given table and store the index info in TB_CDW_INDX_STORE.
+    ***************************************************************************/
+    CURSOR C_IND IS
+      SELECT INDEX_NAME
+        FROM ALL_INDEXES U
+       WHERE U.TABLE_NAME = UPPER(P_TABLE)
+         AND U.INDEX_NAME NOT LIKE 'PK%';
+  
+    CURSOR C_INS IS
+      SELECT U.INDEX_NAME,
+             U.INDEX_TYPE,
+             U.TABLE_NAME,
+             U.TABLESPACE_NAME,
+             UN.COLUMN_NAME,
+             U.PARTITIONED,
+             UN.COLUMN_POSITION
+      
+        FROM ALL_INDEXES U, ALL_IND_COLUMNS UN
+       WHERE U.INDEX_NAME = UN.INDEX_NAME
+         AND U.OWNER = U.OWNER
+         AND U.TABLE_NAME = UPPER(P_TABLE)
+         AND U.INDEX_NAME NOT LIKE 'PK%';
+  
+    V_STR       VARCHAR2(2000);
+    V_CURR_STEP VARCHAR2(4000);
+  BEGIN
+    FOR ins IN C_INS LOOP
+      V_CURR_STEP := 'INSERT INTO TB_CDW_STORE_INDX
+ VALUES(' || INS.INDEX_NAME || ',' || INS.INDEX_TYPE || ',' ||
+                     INS.TABLE_NAME || ',' || INS.TABLESPACE_NAME || ',' ||
+                     INS.COLUMN_NAME || ',' || INS.PARTITIONED || ', ' ||
+                     INS.COLUMN_POSITION || ' )';
+      INSERT INTO TB_CDW_STORE_INDX
+      VALUES
+        (INS.INDEX_NAME,
+         INS.INDEX_TYPE,
+         INS.TABLE_NAME,
+         INS.TABLESPACE_NAME,
+         INS.COLUMN_NAME,
+         INS.PARTITIONED,
+         INS.COLUMN_POSITION);
+    
+      UPDATE TB_CDW_STORE_INDX T
+         SET T.TABLESPACE_NAME = (SELECT DISTINCT TABLESPACE_NAME
+                                    FROM USER_IND_PARTITIONS UP
+                                   WHERE UP.INDEX_NAME = INS.INDEX_NAME)
+       WHERE T.PARTITIONED = 'YES'
+         AND T.TABLESPACE_NAME IS NULL;
+    END LOOP;
+    COMMIT;
+  
+    V_CURR_STEP := '';
+    FOR I IN C_IND LOOP
+      V_STR       := 'DROP INDEX ' || I.INDEX_NAME;
+      V_CURR_STEP := V_STR;
+      EXECUTE IMMEDIATE V_STR;
+    END LOOP;
+  
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_DROP_TABLE_INDX_STORE: ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR('-20001', SQLERRM);
+  END SP_DROP_TABLE_INDX_STORE;
+  ------------------------------------------------------------------------------------------------
+
+  /*PROCEDURE SP_CREATE_TABLE_INDX(P_TABLE IN VARCHAR2) AS
+    \*************************************************************************
+        Created on :10 April 2009
+        Created by : Sourav Chandra
+        Purpose:  Create all indexes for a given table based on the info in TB_CDW_INDX_STORE.
+    ***************************************************************************\
+    CURSOR C1 IS
+      SELECT DISTINCT INDEX_NAME,
+                      INDEX_TYPE,
+                      TABLE_NAME,
+                      TABLESPACE_NAME,
+                      PARTITIONED
+        FROM TB_CDW_STORE_INDX
+       WHERE TABLE_NAME = P_TABLE;
+  
+    CURSOR C_IND(P_IND VARCHAR2) IS
+      SELECT *
+        FROM TB_CDW_STORE_INDX T
+       WHERE T.INDEX_NAME = P_IND
+         AND TABLE_NAME = P_TABLE;
+    V_COL       VARCHAR2(2000);
+    V_STR       VARCHAR2(2000);
+    V_CURR_STEP VARCHAR2(4000);
+    V_IND_TYPE  VARCHAR2(30);
+    V_LOCAL     VARCHAR2(10);
+  BEGIN
+    FOR I IN C1 LOOP
+    
+      FOR INDX IN C_IND(I.INDEX_NAME) LOOP
+        V_COL := V_COL || ',' || INDX.COLUMN_NAME;
+      END LOOP;
+      V_COL := LTRIM(V_COL, ',');
+      SELECT DECODE(I.INDEX_TYPE, 'BITMAP', I.INDEX_TYPE)
+        INTO V_IND_TYPE
+        FROM DUAL;
+      SELECT DECODE(I.PARTITIONED, 'YES', 'LOCAL') INTO V_LOCAL FROM DUAL;
+    
+      V_STR       := 'create ' || V_IND_TYPE || ' index ' || I.INDEX_NAME ||
+                     ' on ' || I.TABLE_NAME || ' (' || V_COL || ' ) ' ||
+                     V_LOCAL || ' tablespace ' || I.TABLESPACE_NAME;
+      V_CURR_STEP := V_STR;
+      EXECUTE IMMEDIATE V_STR;
+    
+      V_CURR_STEP := 'DELETE FROM TB_CDW_STORE_INDX 
+    WHERE TABLE_NAME=' || I.TABLE_NAME ||
+                     ' AND INDEX_NAME=' || I.INDEX_NAME;
+    
+      DELETE FROM TB_CDW_STORE_INDX
+       WHERE TABLE_NAME = I.TABLE_NAME
+         AND INDEX_NAME = I.INDEX_NAME;
+      COMMIT;
+      V_COL       := '';
+      V_CURR_STEP := '';
+    END LOOP;
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_CREATE_TABLE_INDX: ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR('-20001', SQLERRM);
+  END SP_CREATE_TABLE_INDX;*/
+
+  PROCEDURE SP_CREATE_TABLE_INDX(P_TABLE IN VARCHAR2) AS
+    /*************************************************************************
+        Created on :10 April 2009
+        Created by : Sourav Chandra
+        Purpose:  Create all indexes for a given table based on the info in TB_CDW_INDX_STORE.
+    ***************************************************************************/
+    CURSOR C1 IS
+      SELECT DISTINCT INDEX_NAME,
+                      INDEX_TYPE,
+                      TABLE_NAME,
+                      TABLESPACE_NAME,
+                      PARTITIONED
+        FROM TB_CDW_STORE_INDX
+       WHERE TABLE_NAME = P_TABLE;
+  
+    CURSOR C_IND(P_IND VARCHAR2) IS
+      SELECT *
+        FROM TB_CDW_STORE_INDX T
+       WHERE T.INDEX_NAME = P_IND
+         AND TABLE_NAME = P_TABLE
+       ORDER BY T.COLUMN_POSITION;
+    V_COL       VARCHAR2(2000);
+    V_STR       VARCHAR2(2000);
+    V_CURR_STEP VARCHAR2(4000);
+    V_IND_TYPE  VARCHAR2(30);
+    V_LOCAL     VARCHAR2(10);
+  BEGIN
+    FOR I IN C1 LOOP
+    
+      FOR INDX IN C_IND(I.INDEX_NAME) LOOP
+        V_COL := V_COL || ',' || INDX.COLUMN_NAME;
+      END LOOP;
+      V_COL := LTRIM(V_COL, ',');
+      SELECT DECODE(I.INDEX_TYPE, 'BITMAP', I.INDEX_TYPE)
+        INTO V_IND_TYPE
+        FROM DUAL;
+      SELECT DECODE(I.PARTITIONED, 'YES', 'LOCAL') INTO V_LOCAL FROM DUAL;
+    
+      V_STR := 'create ' || V_IND_TYPE || ' index ' || I.INDEX_NAME ||
+               ' on ' || I.TABLE_NAME || ' (' || V_COL || ' ) ' || V_LOCAL ||
+               ' tablespace ' || I.TABLESPACE_NAME || ' NOLOGGING';
+    
+      V_CURR_STEP := V_STR;
+      EXECUTE IMMEDIATE V_STR;
+    
+      ----------TEMPORARY FOR MONITORING PURPOSES------------------------
+      V_STR       := 'ALTER INDEX ' || I.INDEX_NAME || ' MONITORING USAGE';
+      V_CURR_STEP := V_STR;
+      EXECUTE IMMEDIATE V_STR;
+    
+      ----------------------------------------------------------------------
+    
+      V_CURR_STEP := 'DELETE FROM TB_CDW_STORE_INDX 
+    WHERE TABLE_NAME=' || I.TABLE_NAME ||
+                     ' AND INDEX_NAME=' || I.INDEX_NAME;
+    
+      DELETE FROM TB_CDW_STORE_INDX
+       WHERE TABLE_NAME = I.TABLE_NAME
+         AND INDEX_NAME = I.INDEX_NAME;
+      COMMIT;
+      V_COL       := '';
+      V_CURR_STEP := '';
+    END LOOP;
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF V_CURR_STEP IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('PKG_CDW_COMMON_UTIL.SP_CREATE_TABLE_INDX: ERROR WHILE EXECUTING COMMAND:');
+        DBMS_OUTPUT.PUT_LINE(V_CURR_STEP);
+      END IF;
+      RAISE_APPLICATION_ERROR('-20001', SQLERRM);
+  END SP_CREATE_TABLE_INDX;
+
+end PKG_CDW_COMMON_UTIL;
