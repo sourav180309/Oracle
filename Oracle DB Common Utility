@@ -26,7 +26,7 @@ create table TB_CDW_STORE_INDX
 create or replace package PKG_CDW_COMMON_UTIL AUTHID CURRENT_USER is
 
   -- Author  : BAKHAAS1
-  -- Created : 8/12/2008 8:58:03 AM
+  -- Created : 8/12/2017 8:58:03 AM
   -- Purpose : This Package contains common Procedures.
 
   PROCEDURE SP_ENABLE_TABLE_CONSTRAINTS(tablename  varchar,
@@ -75,8 +75,8 @@ create or replace package body PKG_CDW_COMMON_UTIL is
                                         tablespace varchar) AS
     /*
     -------------------------------------------------------------------------------------------
-    CREATED BY -LOGESH
-    CREATED ON -Apr-28-2008
+    CREATED BY -Sourav
+    CREATED ON -Apr-28-2017
     Description -This procedure enables all constraints on a table and dependent on that table
     -------------------------------------------------------------------------------------------
     */
@@ -229,8 +229,8 @@ SELECT ''ALTER TABLE '' || table_name || ''  ENABLE CONSTRAINT '' ||
     PRAGMA AUTONOMOUS_TRANSACTION;
     /*
     -------------------------------------------------------------------------------------------
-    CREATED BY -LOGESH
-    CREATED ON -Apr-28-2008
+    CREATED BY -Sourav
+    CREATED ON -Apr-28-2017
     Description -This procedure disables all constraints on a table and dependent on that table
     -------------------------------------------------------------------------------------------
     */
@@ -353,14 +353,14 @@ SELECT ''ALTER TABLE '' || table_name || ''  ENABLE CONSTRAINT '' ||
   PROCEDURE SP_DROP_TABLE_INDEXES(V_TABLENAME VARCHAR2) IS
     ---------------------------------------------------------------------------------
     --PROJECT:           CDW FACTORY FB
-    --AUTHOR:            COGNIZANT (BAKUL T)
-    --DATE:              13-JUN-2008               
+    --AUTHOR:            COGNIZANT (Sourav C)
+    --DATE:              13-JUN-2017               
     --DESCRIPTION:       THIS PROCEDURE WILL DELETE ALL THE INDEXES FOR A TABLE.
     ---------------------------------------------------------------------------------
     --REVISION HISTORY
     ---------------------------------------------------------------------------------
     --VERSION NO         DATE                AUTHOR       DESCRIPTION
-    --0.1                13-JUN-2008         COGNIZANT    INITIAL VERSION
+    --0.1                13-JUN-2017         COGNIZANT    INITIAL VERSION
     ---------------------------------------------------------------------------------
   
     CURSOR GET_INDEX IS
@@ -394,7 +394,7 @@ SELECT ''ALTER TABLE '' || table_name || ''  ENABLE CONSTRAINT '' ||
                                P_OUTPUT   IN VARCHAR2 DEFAULT 'N') AS
   
     /**********************************************************************************************************
-    Created on :11July 2008
+    Created on :11July 2017
     Created by : Sourav Chandra
     Purpose: Validation of records in a given table in terms of NULL, PK and FK violations and inserting the
              violated record in the error table and deleting the same from the source table
@@ -754,8 +754,8 @@ SELECT ''ALTER TABLE '' || table_name || ''  ENABLE CONSTRAINT '' ||
                                    P_SUBSYS_NAME IN VARCHAR2,
                                    P_ROWID_ACT IN VARCHAR2) AS
     /*****************************************************************************
-    Created on :20th May 2009
-    Created by : Swati Chincholkar
+    Created on :20th May 2016
+    Created by : Sourav C
     Purpose: Validation the record in a given table in terms of Null ,PK and FK vaiolation. And inserting the 
              vaoilated record in the Reject table with ROWID and deleting the same from the given table
              Irrespective of P_ROWID_ACT value, this procedure will insert ROWID value in reject table. This 
